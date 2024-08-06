@@ -1,0 +1,590 @@
+---
+title: "scRNA of MCL"
+author: "hui.wan"
+date: "05/06/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, warning = F, message = F)
+#knitr::opts_knit$set(root.dir = "P:/PHA/Qiang_Pan_Hammarstroms_grupp/HuiWan/0000_transfer/MCL_workplace/")
+knitr::opts_knit$set(root.dir = "/Volumes//PHA/Qiang_Pan_Hammarstroms_grupp/HuiWan/0000_transfer/MCL_workplace/")
+
+```
+
+
+```{r load pkgs}
+library(Seurat)
+library(patchwork)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(DoubletFinder)
+library(scRepertoire)
+library(harmony)
+library(clustree)
+#library(scPred)
+library(RColorBrewer)
+library(ggpubr)
+library(eoffice)
+#library(SeuratData)6+9*
+library(Azimuth)
+library(djvdj)
+library(pheatmap)
+source(file = '_src/Rfunctions_for_scRNA.R')
+#source(file = '/Volumes//PHA/Qiang_Pan_Hammarstroms_grupp/HuiWan/0000_transfer/MCL_workplace/_src/Rfunctions_for_scRNA.R')
+source(file = '_src/global_setting.R')
+
+```
+
+# Description
+
+*Aim*:
+This experiment seeks to understand the single-cell atlas of 20 MCL patients with MCL lymphoma. 
+
+
+
+*Analysis*:
+0. Alignment: CellRanger multi V7 (done)
+1. Merge data 
+2. QC: filter MT
+3. Dimensionality reduction, BatchEffector, Clustering
+4. Annotation: manually by makers, Azimuth BM reference , Cell typist
+5. Malignant prediction: infercnv 
+5. scRNAseq: DEGs among vaccine, and different cell types
+
+
+## set variables
+```{r gloable vars}
+
+color_tf = structure(brewer.pal(9, 'Set1')[c(1,9)], names = c('TRUE', 'FALSE'))
+
+color_clone1 = structure(brewer.pal(9, 'Set1')[c(1,3,9)], names = c('Dominant', 'Minor','NA'))
+
+isotype_list = c('IGHD', 'IGHM', "IGHA1", "IGHA2", "IGHG1", "IGHG2", "IGHG3", "IGHG4")
+col_isotype = structure( brewer.pal(8, 'Paired'),  names = isotype_list)
+
+order.cancer_type = c('MCL', 'Health')
+col.cancer_type = structure(  c(get_palette("Dark2", 2)[2], "#868686FF" )  , names = order.cancer_type)
+
+order.pr = c('Primary', 'Relapse', 'Normal' )
+col.pr = structure( get_palette("jco", 3), names = order.pr)
+
+
+dir.create('plots')
+outfile = 'plots/plotSamples.pptx'
+```
+
+
+
+
+## Read data
+
+
+```{r read sample}
+phe = read_tsv('../MCL_cellranger/sample_info.xls')
+phe = phe %>% filter(Cancer_type != 'DLBCL')
+
+```
+
+
+```{r read data}
+
+# patient data - h5 -----------
+read.patient <- function(samplename){
+  # samplename = 'MC1R_PBMC'
+  print(samplename)
+  dir_gex = paste0('./cellranger_out/MCL_samples/', samplename, '/count/sample_filtered_feature_bc_matrix.h5')
+  dir_vdf = paste0('./cellranger_out/MCL_samples/', samplename, '/vdj_b/')
+
+  # gex
+  sc.count <- Read10X_h5(dir_gex )
+  sdata <- CreateSeuratObject(counts = sc.count, project = samplename, min.cells = 3)
+  
+  # vdj
+  if (file.exists(paste0(dir_vdf, 'filtered_contig_annotations.csv'))) {
+      sdata <- import_vdj(sdata, vdj_dir = dir_vdf, filter_chains = T, filter_paired = T)
+      return(sdata)
+  }else{
+    return(sdata)
+  }
+}
+
+list.patient <- lapply(phe$orig.ident[phe$Cancer_type == 'MCL'] , read.patient)
+names(list.patient) <-phe$orig.ident[phe$Cancer_type == 'MCL'] 
+```
+
+- normal
+```{r read normal}
+# normal data - matrix ---------------
+read.normal <- function(samplename){
+  mydir = paste0('../MCL_cellranger/', samplename, '/')
+  sc.count <- Read10X(mydir)
+  sdata <- CreateSeuratObject(counts = sc.count, project = samplename, min.cells = 3)
+  
+  if (file.exists(paste0(mydir, 'filtered_contig_annotations.csv'))) {
+      sdata <- import_vdj(sdata, vdj_dir = mydir, filter_chains = T, filter_paired = T)
+      return(sdata)
+  }else{
+    return(sdata)
+  }
+}
+
+
+list.normal <- lapply(phe$orig.ident[phe$Cancer_type == 'Health'] , read.normal)
+names(list.normal) = phe$orig.ident[phe$Cancer_type == 'Health']
+```
+
+
+
+
+
+```{r merge}
+list.sc = c(list.patient, list.normal)
+rm(list.normal, list.patient)
+gc()
+saveRDS(list.sc, file = 'Matrix/00.seuratelist.MCL_NC.rds')
+```
+
+
+
+## Merge Data
+```{r merge expression}
+
+# Initialize the Seurat object with the raw (non-normalized data).
+#sdata.MC3D <- CreateSeuratObject(counts = MC3D.count, project = "MC3D_BM", min.cells = 3, min.features = 200)
+
+# merge datasets into one single seurat object
+alldata <- merge(list.sc[[1]],  list.sc[2:length(list.sc)], add.cell.ids = names(list.sc))
+
+alldata$VDJ = if_else(is.na(alldata$cdr3), FALSE, TRUE)
+
+alldata$CellBarcode = rownames(alldata@meta.data)
+
+alldata@meta.data = alldata@meta.data %>% left_join(phe , by = c('orig.ident' = 'Sample' ))
+
+rownames(alldata@meta.data) = alldata$CellBarcode
+
+
+```
+
+
+
+
+## BCR check (could Skip)
+
+```{r V gene usage}
+# Compare the usage of different V and J genes
+ggs <- plot_gene_usage(
+  input       = alldata,                       # Seurat object
+  gene_cols   = c("v_gene", "j_gene"),        # Column(s) containing V(D)J genes to plot
+  cluster_col = "orig.ident",                 # Column containing cell clusters to compare
+  chain       = "IGH"                         # Chain to plot
+)
+
+cowplot::plot_grid(plotlist = ggs)
+
+
+clones = calc_gene_usage(
+  input       = alldata,
+  gene_cols   = c("v_gene", "j_gene","cdr3"),                   # Column containing genes
+  cluster_col = "orig.ident",                    # Column containing cell clusters to compare
+  chain       = "IGH",                      # Chain to calculate gene usage for
+  chain_col   = "chains"                    # Column containing chains
+)
+
+
+
+plot_clonal_abundance(
+  input       = alldata,
+  cluster_col = "orig.ident",                   # Column containing cell clusters to compare
+  n_clones    = 10,                        # Number of top clonotypes to plot
+  type        = "bar"                    # Type of plot, 'bar' or 'line'
+)
+
+```
+
+
+
+
+
+```{r BCR}
+clones = alldata@meta.data %>% filter(VDJ == T) %>%  group_by(orig.ident, cdr3, v_gene, j_gene, isotype) %>% summarise(freq = n()) %>%
+  ungroup() %>% group_by(orig.ident) %>% mutate(Total_clone = sum(freq), percent = freq/Total_clone * 100) %>% 
+  ungroup() %>%  
+  group_by(cdr3, v_gene, j_gene )  %>% arrange(-percent)  %>% mutate(clone_id = cur_group_id()) 
+
+head(clones)  
+
+alldata$domaintClone = if_else(grepl('CASGHRPRTHSRHDYW.*CQQSYSTPFTF',alldata$cdr3) & grepl('IGHV1-2.*IGKV1D-39.*', alldata$v_gene) & grepl('IGHJ5.*IGLJ2', alldata$j_gene), 'Dominant', 
+                               if_else(alldata$VDJ == T, 'Minor', 'NA'))
+
+
+alldata$domaintClone = if_else( alldata$cdr3 == 'CASGHRPRTHSRHDYW;CQQSYSTPFTF', 'Dominant', 
+                               if_else(alldata$VDJ == T, 'Minor', 'NA'))
+
+
+alldata@meta.data$Isotype = str_remove_all(alldata$c_gene, ';.*')
+
+# barplot
+ggbarplot(clones %>% mutate(clone_id = str_c('clone',clone_id)) %>% group_by(orig.ident) %>% slice_max(order_by = percent, n = 5), 
+          x = 'v_gene', y = 'percent', fill = 'clone_id', facet.by = 'orig.ident', scale = 'free_x',  x.text.angle = 30, 
+          palette = vars(paletteer_d("tidyquant::tq_dark") )) + NoLegend()
+
+eoffice::topptx(last_plot()  , filename = outfile, append = T, width = 6, height = 4, title = paste0(' Clonotype abundance'))
+
+# stat
+alldata@meta.data  %>% filter(!is.na(domaintClone)) %>% group_by(orig.ident, domaintClone) %>%
+  summarise(n = n()) %>% spread(domaintClone, n) %>% 
+  mutate(matched_BCR = Dominant + Minor, 
+         Dominat_pct = round(Dominant/matched_BCR * 100,2) )
+
+table(alldata@meta.data$orig.ident)
+
+```
+
+
+
+
+
+
+
+## QC 
+
+- calculate percetage of MT and ribosomal genes per cell, and add to the metadata
+```{r cal_MT_RP, fig.height=8,fig.width=16}
+# caculat MT genes' percent
+alldata <- PercentageFeatureSet(alldata, pattern =  "^MT-", col.name = "percent_mito")
+
+# calculate RP genes' percent
+alldata <- PercentageFeatureSet(alldata, pattern = "RP[SL]", col.name = "percent_ribo")
+
+# Percent hemoglobin genes - includes all genes staring with HB except HBP
+alldata<- PercentageFeatureSet(alldata, pattern = "^HB[^(P)]", col.name = 'percent_hb')
+
+# cell cycle
+alldata <- CellCycleScoring(object = alldata,   g2m.features = cc.genes$g2m.genes, s.features = cc.genes$s.genes)
+
+
+#PLot some of the QC-features as violin Plots
+feats <- c("nFeature_RNA", "nCount_RNA", "percent_mito", "percent_ribo", "percent_hb")
+VlnPlot(alldata, features = feats, pt.size = 0, ncol = 2, group.by = "orig.ident" ) + NoLegend()
+ggsave(last_plot() , filename = 'plots/0.before_QC/Vlnplot.features.pdf',  width =14, height =10)
+eoffice::topptx(last_plot() , filename = outfile, append = T, width =10, height = 6, title = paste0(' QC '))
+
+# IF there is sample with different features, we could check the correlation between gene number and the features
+FeatureScatter(alldata, "nCount_RNA", "nFeature_RNA", group.by = "orig.ident", pt.size = 0.5)
+FeatureScatter(alldata, "nCount_RNA", "percent_ribo", group.by = "orig.ident", pt.size = 0.5) # no Correlation good
+FeatureScatter(alldata, "percent_mito", "percent_ribo", group.by = "orig.ident", pt.size = 0.5) # no Correlation good
+
+
+```
+
+
+
+- QC: remove cells
+```{r}
+df.cell_number = table(alldata$orig.ident) %>% as.data.frame()
+df.BCR_raw = alldata@meta.data %>% group_by(orig.ident) %>% summarise(BCR_raw = sum(VDJ == 'TRUE'))
+
+## filter cells ---------
+#data.filt <- subset(alldata, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent_mito < 20  & nCount_RNA < 40000 )
+data.filt <- subset(alldata, subset = nFeature_RNA > 500 & nFeature_RNA < 5000 )
+df.cell_number$QC_step1  = table(data.filt$orig.ident)  %>% as.numeric()
+
+data.filt <- subset(data.filt, subset =  nCount_RNA < 40000 )
+df.cell_number$QC_step2  = table(data.filt$orig.ident)  %>% as.numeric()
+
+data.filt <- subset(data.filt, subset =  percent_mito < 20 )
+df.cell_number$QC_step3  = table(data.filt$orig.ident)  %>% as.numeric()
+
+
+data.filt <- subset(data.filt, subset =  percent_ribo > 5  )
+df.cell_number$QC_step4  = table(data.filt$orig.ident) %>% as.numeric()
+
+df.BCR_qc = data.filt@meta.data %>% group_by(orig.ident) %>% summarise(BCR_qc = sum(VDJ == 'TRUE'))
+
+
+df.cell_number = df.cell_number %>% mutate(orig.ident = Var1) %>% left_join(df.BCR_raw) %>% left_join(df.BCR_qc)
+write_tsv(phe %>% left_join(df.cell_number %>% select(Sample = Var1, everything())), file = 'result/1.QC.cell_number.tsv')
+
+```
+
+
+- Feature Plot 
+
+```{r cal_MT_RP, fig.height=8,fig.width=18}
+
+#PLot some of the QC-features as violin Plots
+feats <- c("nFeature_RNA", "nCount_RNA", "percent_mito", "percent_ribo", "percent_hb")
+VlnPlot(data.filt, features = feats, pt.size = 0, ncol = 2, group.by = "orig.ident" ) + NoLegend()
+ggsave(last_plot() , filename = 'plots//Vlnplot.features.pdf',  width =14, height =10)
+eoffice::topptx(last_plot() , filename = outfile, append = T, width =10, height = 6, title = paste0(' QC '))
+
+
+
+```
+
+
+
+
+```{r save}
+saveRDS(alldata, file = 'Matrix/00.mergedraw.rds')
+saveRDS(data.filt, file = 'Matrix/01.qc.rds')
+
+alldata <- read_rds('Matrix/00.mergedraw.rds')
+# data.filt <- read_rds('Matrix/01.qc.rds')
+
+```
+
+
+## plot 
+
+- marker plot (to know the major cell type in the cohort)
+```{r markers, fig.width=12,fig.height=4}
+my.reduction = 'umap'
+
+markers.mcl         <- c("CCND1", "SOX11",  "TP53")
+markers.B           <- c("CD19","MS4A1","CD79A")
+markers.T            <- c("CD3D","CD3E","CD3G")
+#markers.NK          <- c("XCL2", "NKG7", "GNLY")
+markers.NK          <- c('KLRC1', 'KLRD1', 'KLRF1')
+markers.Myeloid    <-c("CD68", "CD33","CST3")
+markers.Mono        <- c('LYZ', 'S100A9', 'FCN1')
+markers.pDC         <- c("NRP1","CLEC4C")
+markers.Eryth       <- c('HBQ1', 'HBM', 'GYPA')
+markers.mag         <- c('GATA2', 'FCER1A', 'GATA1')
+markers.Eryth.early <- c('APOC1', 'TESPA1', 'GATA2')
+markers.Eryth.late <- c('GYPA', 'GYPB', 'HBA1')
+markers.NMP <- c('LYZ', 'MPO', 'SERPINB1')
+markers.ELP <- c('FLT3', 'LTB', 'RUNX2') #early lymphoid progenitors??
+markers.T.sub            <- c("CD3E","CD4","CD8A")
+makrers.prolif    <- c('TOP2A', 'TU88', 'MKI67', 'UBE2C')
+
+FeaturePlot(alldata, reduction = my.reduction, dims = 1:2, features = makrers.prolif, ncol = 3,   order = T)
+FeaturePlot(alldata, reduction = my.reduction, dims = 1:2, features = markers.mcl, ncol = 3,   order = T)
+FeaturePlot(alldata, reduction = my.reduction, dims = 1:2, features = markers.B, ncol = 3,   order = T)
+FeaturePlot(alldata, reduction = my.reduction, dims = 1:2, features = markers.T, ncol = 3,   order = T)
+FeaturePlot(alldata, reduction = my.reduction, dims = 1:2, features = markers.Myeloid, ncol = 3,   order = T)
+FeaturePlot(alldata, reduction = my.reduction, dims = 1:2, features = markers.mag, ncol = 3,   order = T)
+FeaturePlot(alldata, reduction = my.reduction, dims = 1:2, features = markers.Eryth, ncol = 3,   order = T)
+FeaturePlot(alldata, reduction = my.reduction, dims = 1:2, features = markers.Mono, ncol = 3,   order = T)
+FeaturePlot(alldata, reduction = my.reduction, dims = 1:2, features = markers.NK, ncol = 3,   order = T)
+FeaturePlot(alldata, reduction = my.reduction, dims = 1:2, features = markers.T.sub, ncol = 3,   order = T)
+
+FeaturePlot(alldata, reduction = my.reduction, dims = 1:2, features = markers.Eryth, ncol = 3,   order = T)
+FeaturePlot(alldata, reduction = my.reduction, dims = 1:2, features = markers.Eryth.early, ncol = 3,   order = T)
+FeaturePlot(alldata, reduction = my.reduction, dims = 1:2, features = markers.Eryth.late, ncol = 3,   order = T)
+FeaturePlot(alldata, reduction = my.reduction, dims = 1:2, features = markers.NMP, ncol = 3,   order = T)
+FeaturePlot(alldata, reduction = my.reduction, dims = 1:2, features = markers.ELP, ncol = 3,   order = T)
+
+```
+
+
+
+
+```{r function plot_package}
+plot_package <- function(data.filt, mydir){
+ 
+   dir.create(mydir)
+  
+  # feature plot
+    plot_grid(ncol = 3, 
+      FeaturePlot(data.filt, features = "nFeature_RNA"),
+      FeaturePlot(data.filt, features = "percent_hb"),
+      FeaturePlot(data.filt, features = "percent_mito"),
+      FeaturePlot(data.filt, features = "percent_ribo"),
+      FeaturePlot(data.filt, features = "riboLT5"),
+      DimPlot(data.filt, group.by = 'Phase'))
+  ggsave(last_plot(), filename = paste0(mydir, 'feature_plot.raw.pdf'), h = 8, w = 12)
+  
+  # Groups
+  plot_grid(ncol = 2,
+            DimPlot(data.filt, group.by = "Cancer_type", reduction = 'umap', cols = col.cancer_type) +  ggtitle('Cancer type'),  
+            #DimPlot(data.filt, group.by = "Batch", reduction = 'umap', cols = get_palette('Set2', n_distinct(phe$Batch))) +  ggtitle('umap'),
+            DimPlot(data.filt, group.by = "Tissue", reduction = 'umap', cols = get_palette('Set1', n_distinct(data.filt$Tissue))) +  ggtitle('Tissue'),
+            DimPlot(data.filt, group.by = "Donor", reduction = 'umap', cols = get_palette('Set2', n_distinct(data.filt$Donor))) +  ggtitle('Donor'), 
+            DimPlot(data.filt, group.by = "orig.ident", reduction = 'umap', cols = get_palette('Set2', n_distinct(data.filt$orig.ident))) +  ggtitle('Sample')
+
+  )
+  
+  ggsave(last_plot(), filename = paste0(mydir, 'dimplot.Groups.pdf'), h = 16, w = 24)
+  
+ #split samples
+  
+  DimPlot(data.filt, group.by = "orig.ident", split.by ="orig.ident" , reduction = 'umap', ncol = 6) +  ggtitle('umap') & NoLegend()
+  ggsave(last_plot(), filename = paste0(mydir, '/dimplot.SampleSplit.pdf'), h = 20, w = 20)
+
+  
+  # markers
+  FeaturePlot(data.filt, reduction = 'umap', dims = 1:2, 
+              features = c(markers.B,markers.T.sub ,markers.NK,markers.Myeloid , markers.Eryth,markers.mcl),
+              ncol = 6,   order = T) & NoLegend()
+
+  ggsave(last_plot(), filename =  paste0(mydir,'/featureplot.markers.pdf'), h = 10, w= 24)
+ 
+  
+}
+```
+
+
+### plot raw cells
+
+- raw cell distribution
+```{r dimplot, fig.height=4,fig.width=8}
+alldata <- SCTransform(alldata,  verbose = F)
+alldata = RunPCA(alldata, verbose = F, npcs = 20)
+alldata = RunUMAP(alldata, dims = 1:10, verbose = F)
+alldata$riboLT5 = if_else(alldata$percent_ribo < 5, 1, 0)
+
+plot_package(alldata, 'plots/0.before_QC/')
+
+``` 
+
+
+### plot filter cells 
+
+
+
+- Regression: no + Integration:no
+```{r Data precess, fig.height=4,fig.width=8}
+
+data.norm.noIng <- data.filt %>%
+   SCTransform(  verbose = FALSE) %>%
+  # SCTransform( vars.to.regress = c('percent_mito' ), verbose = FALSE) %>%
+  # SCTransform( vars.to.regress = c('percent_mito', 'percent_ribo' ), verbose = FALSE) %>%
+  # SplitObject( split.by = "orig.ident") %>%
+  # RunFastMNN(assay = 'SCT') %>%
+  RunPCA( npcs = 50, verbose = F, assay.use = "SCT") %>% 
+  #RunHarmony( group.by.vars = "orig.ident" ,dims.use = 1:50)  %>% 
+  RunUMAP(dims = 1:30, reduction = "pca", reduction.name = "umap") %>% 
+  FindNeighbors( dims = 1:30,  reduction = "pca") %>% 
+  FindClusters(resolution = 0.6,  graph.name = 'SCT_snn') %>% 
+  identity()
+
+
+
+plot_package(data.norm.noIng, 'plots/2.Integration/')
+saveRDS(data.norm.noIng, 'Matrix/01.qc_norm.rds')
+
+``` 
+
+
+
+
+- Regression: mito + Integration:no
+```{r Data precess, fig.height=4,fig.width=8}
+
+data.norm.Reg_MT <- data.filt %>%
+  # SCTransform(  verbose = FALSE) %>%
+   SCTransform( vars.to.regress = c('percent_mito' ), verbose = FALSE) %>%
+  # SCTransform( vars.to.regress = c('percent_mito', 'percent_ribo', 'nCount_RNA', 'nFeature_RNA' ), verbose = FALSE) %>%
+  # SplitObject( split.by = "orig.ident") %>%
+  # RunFastMNN(assay = 'SCT') %>%
+  RunPCA( npcs = 50, verbose = F, assay.use = "SCT") %>% 
+  #RunHarmony( group.by.vars = "orig.ident" ,dims.use = 1:50)  %>% 
+  RunUMAP(dims = 1:30, reduction = "pca", reduction.name = "umap") %>% 
+  FindNeighbors( dims = 1:30,  reduction = "pca") %>% 
+  FindClusters(resolution = 0.6,  graph.name = 'SCT_snn') %>% 
+  identity()
+
+
+plot_package(data.norm.Reg_MT, 'plots/1.after_QC/Regress_MT/')
+
+
+``` 
+
+
+
+- Regression: mito + Integration:no
+```{r Data precess, fig.height=4,fig.width=8}
+
+data.norm.Reg_MT_RB <- data.filt %>%
+  # SCTransform(  verbose = FALSE) %>%
+  # SCTransform( vars.to.regress = c('percent_mito' ), verbose = FALSE) %>%
+  SCTransform( vars.to.regress = c('percent_mito', 'percent_ribo'  ), verbose = FALSE) %>%
+  # SplitObject( split.by = "orig.ident") %>%
+  # RunFastMNN(assay = 'SCT') %>%
+  RunPCA( npcs = 50, verbose = F, assay.use = "SCT") %>% 
+  #RunHarmony( group.by.vars = "orig.ident" ,dims.use = 1:50)  %>% 
+  RunUMAP(dims = 1:30, reduction = "pca", reduction.name = "umap") %>% 
+  FindNeighbors( dims = 1:30,  reduction = "pca") %>% 
+  FindClusters(resolution = 0.6,  graph.name = 'SCT_snn') %>% 
+  identity()
+
+
+plot_package(data.norm.Reg_MT_RB, 'plots/1.after_QC/Regress_MT_RB/')
+saveRDS(data.norm.Reg_MT_RB, 'result/01.qc_norm.RegMtRb.rds')
+
+``` 
+
+
+- Regression: mito&ribo&count + Integration:no
+```{r Data precess, fig.height=4,fig.width=8}
+
+data.norm.Reg4 <- data.filt %>%
+  # SCTransform(  verbose = FALSE) %>%
+  # SCTransform( vars.to.regress = c('percent_mito' ), verbose = FALSE) %>%
+   SCTransform( vars.to.regress = c('percent_mito', 'percent_ribo', 'nCount_RNA'), verbose = FALSE) %>%
+  # SplitObject( split.by = "orig.ident") %>%
+  # RunFastMNN(assay = 'SCT') %>%
+  RunPCA( npcs = 50, verbose = F, assay.use = "SCT") %>% 
+  #RunHarmony( group.by.vars = "orig.ident" ,dims.use = 1:50)  %>% 
+  RunUMAP(dims = 1:30, reduction = "pca", reduction.name = "umap") %>% 
+  FindNeighbors( dims = 1:30,  reduction = "pca") %>% 
+  FindClusters(resolution = 0.6,  graph.name = 'SCT_snn') %>% 
+  identity()
+
+
+plot_package(data.norm.Reg3, 'plots/1.after_QC/Regress_mito_ribo_count/')
+
+``` 
+
+
+
+
+- Regression: mito&ribo&count + Integration:no
+```{r Data precess, fig.height=4,fig.width=8}
+
+data.norm.Reg4 <- data.filt %>%
+  # SCTransform(  verbose = FALSE) %>%
+  # SCTransform( vars.to.regress = c('percent_mito' ), verbose = FALSE) %>%
+   SCTransform( vars.to.regress = c('percent_mito', 'percent_ribo', 'nCount_RNA', 'nFeature_RNA' ), verbose = FALSE) %>%
+  # SplitObject( split.by = "orig.ident") %>%
+  # RunFastMNN(assay = 'SCT') %>%
+  RunPCA( npcs = 50, verbose = F, assay.use = "SCT") %>% 
+  #RunHarmony( group.by.vars = "orig.ident" ,dims.use = 1:50)  %>% 
+  RunUMAP(dims = 1:30, reduction = "pca", reduction.name = "umap") %>% 
+  FindNeighbors( dims = 1:30,  reduction = "pca") %>% 
+  FindClusters(resolution = 0.6,  graph.name = 'SCT_snn') %>% 
+  identity()
+
+
+plot_package(data.norm.Reg4, 'plots/1.after_QC/Regress_mito_ribo_ngene_count/')
+saveRDS(data.norm.Reg4, 'result/01.qc_norm.RegMtRbGeneCount.rds')
+
+
+``` 
+
+
+
+
+
+
+
+
+
+
+```{r fig.width=12,fig.height=6}
+# select potential cell types to plot
+FeaturePlot(data.norm.noIng, reduction = my.reduction, dims = 1:2, 
+              features = c(markers.B,markers.T.sub ,markers.NK,markers.Myeloid , markers.Eryth,markers.mcl),
+              ncol = 6,   order = T)
+
+ggsave(last_plot(), filename = 'plots/featureplot.markers.pdf', h = 10, w= 20)
+
+```
+
+
+
+

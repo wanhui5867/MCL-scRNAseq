@@ -1,0 +1,1658 @@
+---
+title: "1.malignantB"
+author: "hui.wan"
+date: "09/06/2023"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, warning = F, message = F)
+knitr::opts_knit$set(root.dir = '~/OneDrive - Karolinska Institutet/Documents//Project/MCL_scRNAseq//')
+```
+
+
+```{r load pkgs}
+library(Seurat)
+library(patchwork)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(DoubletFinder)
+library(scRepertoire)
+library(harmony)
+library(clustree)
+library(scPred)
+library(RColorBrewer)
+library(ggpubr)
+library(eoffice)
+library(grid)
+library(EnhancedVolcano)
+library(monocle)
+library(SeuratWrappers)
+library(rstatix)
+source(file = '_src/Rfunctions_for_scRNA.R')
+source(file = '_src/global_setting.R')
+```
+
+
+## set variables
+```{r gloable vars}
+mydir = 'q.mb.cells/noIntegration/'
+dir.create(mydir)
+outfile = paste0(mydir, '2.plot.malignant.pptx')
+gene.lymphchip = read_lines('~/OneDrive - Karolinska Institutet//Mac/Project/MCL50_2022/1.driver/_Ref/lymphChip.gene.list')
+
+```
+
+
+## Load datasets
+```{r normalize in UPPMAX _src/5.1.MalignantB.normalize.R}
+q.mb <- read_rds('Matrix/04_Malignant.rds')
+
+q.mb.n <- CreateSeuratObject(counts = q.mb@assays$RNA@counts, meta.data = q.mb.meta)
+
+q.mb.n <- q.mb.n %>%
+  SCTransform( assay = "RNA", new.assay.name = "SCT", verbose = FALSE) %>%
+  RunPCA( npcs = 50, verbose = F, assay.use = "SCT") %>%
+  #RunHarmony( group.by.vars = "orig.ident" ,dims.use = 1:50)  %>%
+  RunUMAP(dims = 1:20, reduction = "pca", reduction.name = "umap") %>%
+  FindNeighbors( dims = 1:20,  reduction = "pca") %>%
+  FindClusters(resolution = 1,  graph.name = 'SCT_snn') %>%
+  identity()
+
+# Clustering with louvain (algorithm 1)
+for (res in c(0.1, 0.25,  0.5, 0.75, 1, 1.5, 2)) {
+    q.mb.n <- FindClusters(q.mb.n, graph.name = "SCT_snn", resolution = res, algorithm = 1 )
+}
+
+plot_grid(ncol = 3,
+    #DimPlot(data.filt, reduction = "umap", group.by = "orig.ident") + ggtitle("UMAP raw_data"),
+    #DimPlot(data.norm, reduction = my.reduction, group.by = "orig.ident") + ggtitle("UMAP "),
+    DimPlot(q.mb.n, reduction = my.reduction, label =  T, group.by = "SCT_snn_res.0.25") +  ggtitle("louvain_0.25") ,
+    DimPlot(q.mb.n, reduction = my.reduction, label =  T, group.by = "SCT_snn_res.0.5") +  ggtitle("louvain_0.5") ,
+    DimPlot(q.mb.n, reduction = my.reduction, label =  T, group.by = "SCT_snn_res.0.75") +  ggtitle("louvain_0.75") ,
+    DimPlot(q.mb.n, reduction = my.reduction, label = T, group.by = "SCT_snn_res.1") +  ggtitle("louvain_1"),
+    DimPlot(q.mb.n, reduction = my.reduction,label = T,  group.by = "SCT_snn_res.1.5") +  ggtitle("louvain_1.5"),
+    DimPlot(q.mb.n, reduction = my.reduction,  group.by = "SCT_snn_res.2", label = T) +  ggtitle("louvain_2")
+
+    )
+
+ggsave(last_plot(), filename = paste0(mydir,'02.dimplot.resoultionSelect.png'), w = 16, h = 10)
+
+clustree(q.mb.n@meta.data, prefix = "SCT_snn_res.")
+ggsave(last_plot(), filename = paste0(mydir,'02.dimplot.resoultionTree.png'), w = 8, h = 10)
+
+
+saveRDS(q.mb.n, paste0(mydir,'01.subset.count.norm.clust.rds'))
+```
+
+
+
+```{r load data}
+q.mb.p <- read_rds('q.mb.cells/noIntegration/01.subset.count.norm.clust.rds')
+```
+
+
+```{r export the gene expression matrix in each samples}
+# average expression
+genexp = AverageExpression(q.mb.p, assays = 'SCT', group.by = 'Sample', slot = 'data')$SCT
+write_tsv(data.frame(genexp) %>% rownames_to_column('Gene'), 'q.mb.cells/noIntegration/AllGene.AverageExpression.xls' )
+
+# expresion proportion
+geneprop = PrctCellExpringGene(q.mb.p, genes = rownames(genexp), 
+                    group.by = "Sample", assay = "SCT", datatype = "counts", threshold = 0)
+
+write_tsv(data.frame(geneprop) %>% rownames_to_column('Gene'), 'q.mb.cells/noIntegration/AllGene.CellProprotion.xls' )
+
+```
+
+
+
+```{r plot}
+w = 6
+h = 6
+reduction = 'umap'
+sel.clust = "SCT_snn_res.0.6"
+
+
+
+# plot Sampling time
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Sampling_time", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('by Sampling time') ) + 
+                    scale_color_manual(values = col.samtime) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Sampling_time.T.png'), w = w+2, h = h)
+
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Sampling_time", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('by Sampling time') ) + 
+                    scale_color_manual(values = col.samtime) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Sampling_time.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Sampling_time", repel = T, label = T, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('by Sampling time') ) + 
+                    scale_color_manual(values = col.samtime) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Sampling_time.L.png'), w = w, h = h)
+
+# plot sampling tissue
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Tissue", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('by Tissue') ) + 
+            scale_color_manual(values = col.tissue) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.tissue.T.png'), w = w+2, h = h)
+
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Tissue", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('by Tissue') ) + 
+            scale_color_manual(values = col.tissue) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.tissue.F.png'), w = w, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Tissue", repel = T, label = T, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('by Tissue') ) + 
+            scale_color_manual(values = col.tissue) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.tissue.L.png'), w = w, h = h)
+
+
+# plot samples
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Sample", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('by Sample') ) + 
+          scale_color_manual(values = col.sample) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.sample.T.png'), w = w+2, h = h)
+
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Sample", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+           scale_color_manual(values = col.sample) + 
+          labs(title = paste0('by Sample') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.sample.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Sample", repel = T, label = T, label.size = 5, raster = T) + NoAxes()  +  
+          NoLegend() + 
+           scale_color_manual(values = col.sample) + 
+          labs(title = paste0('by Sample') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.sample.L.png'), w = w, h = h)
+
+
+
+# plot Donor/patients
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Patient", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('by Patient') ) + 
+          scale_color_manual(values = col.patient) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Patient.T.png'), w = w+2, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Patient", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('by Patient') ) + 
+          scale_color_manual(values = col.patient) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Patient.F.png'), w = w, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Patient", repel = T, label = T, label.size = 6, raster = T) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('by Patient') ) + 
+          scale_color_manual(values = col.patient) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Patient.L.png'), w = w, h = h)
+
+
+
+
+# plot cell type
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "celltype_inferMalig", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('by Cell Type') ) + 
+          scale_color_manual(values = col.cell_major) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.celltype.T.png'), w = w+2, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "celltype_inferMalig", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('by Cell Type') ) + 
+          scale_color_manual(values = col.cell_major) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.celltype.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "celltype_inferMalig", repel = T, label = T, label.size = 7, raster = T) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('by Cell Type') ) + 
+          scale_color_manual(values = col.cell_major) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.celltype.L.png'), w = w, h = h)
+
+
+
+
+ # plot VDJ
+# ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "domaintClone", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+#           scale_color_manual(values = color_clone1) + 
+#           labs(title = paste0('by BCR Clone') ) + 
+#           theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+#         filename =  paste0(mydir,reduction, '.VDJ.T.png'), w = w+2, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "VDJ_manu", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          scale_color_manual(values = color_tf) + 
+          labs(title = paste0('by VDJ') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.VDJ.T.png'), w = w+2, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "VDJ_manu", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  NoLegend() +
+          scale_color_manual(values = color_tf) + 
+          labs(title = paste0('by VDJ') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.VDJ.F.png'), w = w, h = h)
+
+# plot clusters
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = sel.clust, repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('by Cluster') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.cluster.T.png'), w = w+2, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = sel.clust, repel = T, label = F, label.size = 7, raster = T) + NoAxes()  + NoLegend() + 
+          labs(title = paste0('by Cluster') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.cluster.F.png'), w = w, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = sel.clust, repel = T, label = T, label.size = 7, raster = T) + NoAxes()  + NoLegend() + 
+          labs(title = paste0('by Cluster') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.cluster.L.png'), w = w, h = h)
+
+
+# plot cell cycle
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Phase", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('by Cell cycle') ) + 
+            scale_color_manual(values = color_cellcycle) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.phase.T.png'), w = w+2, h = h)
+
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Phase", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('by Cell cycle') ) + 
+            scale_color_manual(values = color_cellcycle) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.phase.F.png'), w = w, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Phase", repel = T, label = T, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('by Cell cycle') ) + 
+            scale_color_manual(values = color_cellcycle) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.phase.L.png'), w = w, h = h)
+
+
+
+#plot isotype
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Isotype",repel = T, label = T, label.size = 7, raster = T) + NoAxes()  +
+          labs(title = 'Isotype from scVDJ') +
+           scale_color_manual(values = col_isotype) + 
+          theme(panel.background = element_rect(fill = 'white', colour = 'black', size = 2)),
+        filename =   paste0(mydir,reduction, '.VDJ.isotype.T.pdf'), w = w+2, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Isotype", repel = T, label = T, label.size = 7, raster = T) + NoAxes()  + NoLegend() +
+          labs(title = 'Isotype from scVDJ') + 
+           scale_color_manual(values = col_isotype) + 
+          theme(panel.background = element_rect(fill = 'white', colour = 'black', size = 2)),
+        filename =   paste0(mydir,reduction, '.VDJ.isotype.F.pdf'), w = w, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "Isotype", repel = T, label = T, label.size = 7,raster = T) + 
+          NoAxes()  + NoLegend() +
+          labs(title = 'Isotype from scVDJ') + 
+           scale_color_manual(values = col_isotype) + 
+          theme(panel.background = element_rect(fill = 'white', colour = 'black', size = 2)),
+        filename =   paste0(mydir,reduction, '.VDJ.isotype.L.pdf'), w = w, h = h)
+
+# plot igK/igL
+ggsave(FeaturePlot(q.mb.p, reduction = reduction,  features  = "igl_kl_ratio", repel = T, 
+            raster = F, label = F, label.size = 7) + NoAxes()  +  NoLegend() + 
+        scale_colour_gradientn(colours = rev(brewer.pal(n = 11, name = "RdYlBu"))) + 
+        labs(title = paste0('by IGK/IGL ratio') ) + 
+        theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.IgK_L.F.png'), w = w, h = h)
+    
+ggsave(FeaturePlot(q.mb.p, reduction = reduction,  features  = "igl_kl_ratio", repel = T, 
+            raster = F, label = F, label.size = 7) + NoAxes()  +  
+        scale_colour_gradientn(colours = rev(brewer.pal(n = 11, name = "RdYlBu"))) + 
+        labs(title = paste0('by IGK/IGL ratio') ) + 
+        theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.IgK_L.T.png'), w = w+1, h = h)
+    
+# plot clonalBCR
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "clonalBCR", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('by Clonal BCR') ) + 
+          scale_color_manual(values = color_clone1) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0('q.all.cells/',reduction, '.clonalBCR.T.png'), w = w+2, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "clonalBCR", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('by Clonal BCR') ) + 
+          scale_color_manual(values = color_clone1) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.clonalBCR.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.by = "clonalBCR", repel = T, label = T, label.size = 7, raster = T) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('by Clonal BCR') ) + 
+          scale_color_manual(values = color_clone1) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.clonalBCR.L.png'), w = w, h = h)
+
+
+  # plot SHM
+ggsave( FeaturePlot(q.mb.p, reduction = reduction, features  = "SHM_VH", repel = T,
+                      max.cutoff = quantile(q.mb.p$SHM_VH, na.rm = T, probs = 0.99),
+                      # cols =  c("#00AFBB", "#E7B800", "#FC4E07"),
+                      cols =  c( "#00AFBB", "#FC4E07"),
+                      label = F, label.size = 7) + NoAxes()  +
+            #scale_color_manual(values = color_clone1) +
+            labs(title = paste0('by SHM') ) +
+            theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+          filename =  paste0(mydir,reduction, '.SHM.T.png'), w = w+1, h = h)
+  
+
+
+```
+
+
+
+```{r drivers}
+q.mb.p@active.assay <- "SCT"
+q.mb.p$Sample <- factor(q.mb.p$Sample, levels = order.sample[1:20])
+
+  
+markers.MCL         <- c("CCND1", "SOX11", "ATM")
+
+# feature plot
+# q.mb.p$CCND1 <- NULL
+# q.mb.p$SOX11 <- NULL
+my.featureplot( q.mb.p,'CCND1', mydir )
+my.featureplot(q.mb.p, 'SOX11', mydir )
+my.featureplot(q.mb.p, 'ATM', mydir )
+my.featureplot(q.mb.p, 'MS4A1', mydir ) # R therapy
+
+# vlnplot
+pv.ccnd1 <- my.Vlnplot(q.mb.p, gene =  'CCND1', x = 'Sample',color =  col.sample )
+pv.sox11 <- my.Vlnplot(q.mb.p, gene =  'SOX11', x = 'Sample',color =  col.sample )
+pv.atm <- my.Vlnplot(q.mb.p, gene =  'ATM', x = 'Sample',color =  col.sample )
+pv.cd20 <- my.Vlnplot(q.mb.p, gene =  'MS4A1', x = 'Sample',color =  col.sample )
+
+
+eoffice::topptx(pv.ccnd1, filename = outfile, append = T, width = 6, height = 3, title = paste0('CCND1'))
+eoffice::topptx(pv.sox11, filename = outfile, append = T, width = 6, height = 3, title = paste0('SOX11'))
+eoffice::topptx(pv.atm, filename = outfile, append = T, width = 6, height = 3, title = paste0('ATM'))
+eoffice::topptx(pv.cd20, filename = outfile, append = T, width = 6, height = 3, title = paste0('CD20'))
+
+
+  
+```
+
+
+
+```{r B lineage markers}
+q.mb.p@active.assay <- "SCT"
+q.mb.p$Sample <- factor(q.mb.p$Sample, levels = order.sample[1:20])
+
+  
+markers.Blineage        <- c("CD19",  "MS4A1", "CD79A", "TCL1A", "CD27", "TNFRSF138", "BCL6", "MKI67", "XBP1", "CD38", "TNFRSF17","IL10", "HAVCR1", "EBI3")
+
+# Dotplot
+DotPlot(q.mb.p, group.by = "Sample", features = markers.Blineage, 
+        cluster.idents = F, 
+        dot.min = 0,  col.min = 0, dot.scale = 7)  +   
+  theme(panel.background = element_rect(colour = 'black', size = 2)) +
+  coord_flip()  + 
+  rremove('xlab') + rremove('ylab') + RotatedAxis()
+
+ggsave(last_plot(), file = paste0(mydir, 'Dotplot.BlineageMarkers.pdf'), w = 12, h = 6)
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 8, height = 4, title = paste0('B lineage markers'))
+
+  
+```
+
+# Patient  ---- 
+
+### check MHC loss
+```{r}
+Idents(q.mb.p ) <- 'Sample'
+
+
+marker.mhc2 <- c( "HLA-DRA", "HLA-DRB1" , "HLA-DRB5", "HLA-DQA1", "HLA-DQB1",  "HLA-DQA2", "HLA-DQB2", "HLA-DOB"  ,"HLA-DMB", "HLA-DMA",  "HLA-DOA", "HLA-DPA1", "HLA-DPB1", "CIITA" )
+marker.mhc1 <- c( "HLA-A",  "HLA-B",  "HLA-C" , "HLA-E", "HLA-G" ,"HLA-F" , 'B2M', 'TAP1' )
+marker.recept <- c('CD274', 'PDCD1LG2', 'CD58') # PDL1-CD274: PDL2-PDCD1LG2
+# cell expression
+DoHeatmap(q.mb.p, features = c(marker.mhc1, marker.mhc2,marker.recept), group.by = 'Sample')  & NoLegend()
+ggsave( last_plot() , file = paste0(mydir, 'Heatmap.MHCgenes.pdf'), w = 12, h = 6)
+
+
+# average expression
+avgexp <- AverageExpression(q.mb.p, features = c(marker.mhc1, marker.mhc2), return.seurat = T)@assays$SCT@data
+myheatmap(avgexp, cluster_row = F)  # scaled by row
+
+
+# MHCscore Dotplot (percent + expression)
+DotPlot(q.mb.p, features = c(marker.mhc1, marker.mhc2)) + coord_flip() 
+
+# Feature plot
+ggsave( FeaturePlot(q.mb.p, features = c(marker.mhc1, marker.mhc2), ncol = 4, raster = T) & NoLegend(), 
+        filename =  paste0(mydir, 'FeaturePlot.MHCgenes.png'), w = 10, h = 14)
+FeaturePlot(q.mb.p, features = c(marker.recept), ncol = 3, raster = T) & NoLegend()
+
+```
+
+
+
+
+
+## DEG
+Downsample to reduce the sample size bias 
+```{r downsample}
+sample.cells = q.mb.p@meta.data %>% select(CellBarcode, Sample)
+table(sample.cells$Sample) #MC202D <500 malignant cells
+downsample.cells = sample.cells %>% filter(Sample != 'MC202D' ) %>% 
+  group_by(Sample) %>% sample_n(500, replace = F) %>% distinct() %>% 
+  bind_rows(sample.cells %>% filter(Sample == 'MC202D' ) )
+
+q.mb.p.downsample <- subset(q.mb.p, cells = downsample.cells$CellBarcode)
+q.mb.p <- q.mb.p.downsample
+```
+
+
+```{r DEGs by patient }
+
+Idents(q.mb.p)   <- 'Patient'
+levels(q.mb.p)  <- order.patient[1:11]
+
+
+markers_genes <- FindAllMarkers(q.mb.p, logfc.threshold = log2(1.5), test.use = "wilcox",  
+    min.pct = 0.1, min.diff.pct = 0.2, only.pos = TRUE,  random.seed = 1234, 
+    assay = "SCT") %>%  
+    group_by(cluster) %>% filter(p_val_adj <= 0.05) 
+
+write_tsv(markers_genes, paste0(mydir, 'DEGs.Patients.xls'))
+
+
+
+top5 <- markers_genes %>% group_by(cluster) %>% top_n(-5, avg_log2FC)
+#DoHeatmap(q.all.nb, top5$gene, size=3 )
+
+mat_ave_cluster <- AverageExpression(q.mb.p, return.seurat = T)@assays$SCT@data
+mat_cluster     <- mat_ave_cluster[top5$gene,]
+
+myheatmap(mat_cluster)
+heat <- myheatmap(mat_ave_cluster[unique(markers_genes$gene), ])  
+
+
+
+
+## labels
+show.label = intersect(markers_genes$gene, gene.lymphchip)
+
+#png(file = 'q.mb.cells/heatmap.markers.cluster.png', h = 20, w = 14, units = 'in')
+pdf(file = 'q.mb.cells/heatmap.markers.Patient.clusterColumn.pdf', h = 9, w = 6)
+add.flag(heat, kept.labels = show.label,  repel.degree = 0.2)
+dev.off()
+
+
+# according to sample order to order genes
+heat.order = markers_genes %>%   arrange(match(cluster, order.sample), -avg_log2FC)
+heat <- myheatmap(mat_ave_cluster[unique(heat.order$gene),  ], cluster_rows = F, cluster_cols = T)  # cluster column
+#heat.clust <- myheatmap(mat_ave_cluster[unique(markers_genes$gene), ], cluster_rows = T, cluster_cols = T)  #cluster row and column
+
+pdf(file = 'q.mb.cells/heatmap.markers.Patient.clusterColumnRow.pdf', h = 9, w = 6)
+add.flag(heat, kept.labels = show.label,  repel.degree = 0.2)
+dev.off()
+
+
+```
+
+
+
+```{r DEGs by Sample }
+
+Idents(q.mb.p)   <- 'Sample'
+levels(q.mb.p)  <- order.sample[1:20]
+
+
+markers_genes <- FindAllMarkers(q.mb.p, logfc.threshold = log2(1.5), test.use = "wilcox",  
+    min.pct = 0.1, min.diff.pct = 0.2, only.pos = TRUE,  random.seed = 1234, 
+    assay = "SCT") %>%  
+    group_by(cluster) %>% filter(p_val_adj <= 0.05) 
+
+write_tsv(markers_genes, paste0(mydir, 'DEGs.Samples.xls'))
+
+
+
+top5 <- markers_genes %>% group_by(cluster) %>% top_n(-5, avg_log2FC)
+#DoHeatmap(q.all.nb, top5$gene, size=3 )
+
+mat_ave_cluster <- AverageExpression(q.mb.p, return.seurat = T)@assays$SCT@data
+mat_cluster     <- mat_ave_cluster[top5$gene,]
+
+myheatmap(mat_cluster)
+heat <- myheatmap(mat_ave_cluster[unique(markers_genes$gene), ], 
+                  annotation_col = phe %>% select(Sample, Tissue, Donor, Sampling_time) %>% column_to_rownames('Sample') %>% as.data.frame(),
+                  annotation_colors = list(Tissue = col.tissue, Donor = col.patient[1:11], Sampling_time = col.samtime))  
+
+
+
+
+## labels
+show.label = intersect(markers_genes$gene, gene.lymphchip)
+
+#png(file = 'q.mb.cells/heatmap.markers.cluster.png', h = 20, w = 14, units = 'in')
+pdf(file = 'q.mb.cells/heatmap.markers.Sample.clusterColumn.pdf', h = 9, w = 6)
+add.flag(heat, kept.labels = show.label,  repel.degree = 0.2)
+dev.off()
+
+
+# according to sample order to order genes
+heat.order = markers_genes %>%   arrange(match(cluster, order.sample), -avg_log2FC)
+heat <- myheatmap(mat_ave_cluster[unique(heat.order$gene),  ], cluster_rows = F, cluster_cols = T,
+                                    annotation_col = phe %>% select(Sample, Tissue, Donor, Sampling_time) %>% column_to_rownames('Sample') %>% as.data.frame(),
+                  annotation_colors = list(Tissue = col.tissue, Donor = col.patient[1:11], Sampling_time = col.samtime))  # cluster column
+#heat.clust <- myheatmap(mat_ave_cluster[unique(markers_genes$gene), ], cluster_rows = T, cluster_cols = T)  #cluster row and column
+
+pdf(file = 'q.mb.cells/heatmap.markers.Sample.clusterColumnRow.pdf', h = 9, w = 6)
+add.flag(heat, kept.labels = show.label,  repel.degree = 0.2)
+dev.off()
+
+
+```
+
+
+## DEGs enrich pathway
+```{r Enrich of Sample NO MEANING}
+library(msigdbr)
+
+# Stromal gene signature - largeB cell lymphoma -------- 
+wp_gs <- read.gmt("~/OneDrive - Karolinska Institutet//Mac/Project/MCL_scRNAseq/_ref/Signatures from Lenz 2008 NEJM.gmt.txt")
+
+
+cluster.wp <- compareCluster( gene ~ cluster, data = markers_genes,  fun="enricher", TERM2GENE = wp_gs )
+pd_wp <- dotplot(filter(cluster.wp, qvalue<0.0001),showCategory=20)
+write_tsv(summary(cluster.wp), paste0('q.mb.cells/DEGs.enrich.gslymphoma.Sample.xls'))
+ggsave(pd_wp, filename = paste0('q.mb.cells/DEGs.enrich.gslymphoma.Sample.q0001.pdf'), w =12, h = 10)
+
+
+
+# Hallmark ----
+
+hallmark_id <- msigdbr(species = "Homo sapiens", category = c('H')) %>% 
+  select(term = gs_name , gene = gene_symbol) %>% mutate(term = str_remove(term, 'HALLMARK_'))
+
+
+cluster.hallmark <- compareCluster(gene ~ cluster, data = markers_genes,   fun="enricher", TERM2GENE = hallmark_id )
+pd_cluster.hallmark <- dotplot(filter(cluster.hallmark, qvalue<0.05),showCategory=20, x = 'Cluster' )  + theme(axis.text.x =  element_text(angle = 90, vjust = 0.5, hjust = 1))
+write_tsv(summary(cluster.hallmark), paste0('q.mb.cells/DEGs.enrich.gshallmark.xls'))
+ggsave(pd_cluster.hallmark, filename = paste0('q.mb.cells/DEGs.enrich.gshallmakr.Sample.q05.pdf'), w =8, h = 4)
+
+pn_cluster.hallmark <- cnetplot(cluster.hallmark, node_label="all", cex_label_gene = 0.8, color_category = "blue") + scale_fill_manual(values = col.sample)
+ggsave(pn_cluster.hallmark, filename = paste0('q.mb.cells/DEGs.network.gshallmakr.Sample.q05.pdf'), w =8, h = 8)
+
+```
+
+
+
+
+# Primary vs Relapse ---- 
+
+```{r volcano of Treatment}
+Idents(q.mb.p)   <- 'Sampling_time' 
+ident.1 = "Primary"
+ident.2 = "Relapse"
+FC_cut = log2(1.5)
+q_cut = 0.01
+
+#q.mb <- PrepSCTFindMarkers(q.mb) 
+markers_genes.treatment<-  FindMarkers(q.mb.p, ident.1 = ident.1, ident.2 = ident.2 , min.pct = 0.1, logfc.threshold = 0)  # if error, run the above command
+
+#  volcano plot
+pV <- myVolcano(markers_genes.treatment, ident.1 = ident.1 , ident.2 = ident.2 , 
+                      FCcutoff = FC_cut, pCutoff = q_cut)
+ggsave(pV , filename =  'q.mb.cells/noIntegration/DEG_DvsR/Volcano.Treatment.allDiff.png', w = 7, h = 5)
+
+# select FC genes to label volcano
+select.genes <- markers_genes.treatment %>% 
+  filter(abs(avg_log2FC) > FC_cut, p_val_adj < q_cut) %>%
+  rownames_to_column('Gene') %>% 
+  #filter(Gene %in% gene.lymphchip | grepl('^IG', Gene)) %>% 
+  filter(Gene %in% gene.lymphchip ) %>% 
+  pull(Gene)
+
+pV.select <- myVolcano(markers_genes.treatment, ident.1 = ident.1 , ident.2 = ident.2 ,  
+                        #selectLab = select.genes, 
+                        selectLab = c(select.genes),
+                        xlim = c(-2,2), 
+                      FCcutoff = FC_cut, pCutoff = q_cut)
+
+ggsave(pV.select, filename =  'q.mb.cells/noIntegration/DEG_DvsR/Volcano.DvsR.selectgenes.pdf', w = 7, h = 5)
+
+# export the gene table
+write_tsv(markers_genes.treatment %>% rownames_to_column('Gene'), 'q.mb.cells/noIntegration/DEG_DvsR/DEGs.DvsR.tsv') # the gene table
+
+gene.diff <- read_tsv('q.mb.cells/noIntegration/DEG_DvsR/DEGs.DvsR.tsv') %>% 
+  filter(p_val_adj < q_cut, abs(avg_log2FC) > FC_cut) %>% 
+  mutate(Change = if_else(pct.1 > pct.2, 'Up', 'Down') )
+write_tsv(gene.diff, 'q.mb.cells/noIntegration/DEG_DvsR/DEGs.DvsR.q0.01.FC1.5.tsv') # the gene table
+
+```
+
+
+
+```{r GSEA enrichment}
+markers_genes.treatment['MYC', ]  # From volcano plot, MYC is primary-higher, thus ptc.1 is primary, and avg_log2FC >0 is primary -high
+DEGs_DR <- markers_genes.treatment %>% rownames_to_column('Gene') 
+  #filter(abs(avg_log2FC) > 0.585, p_val_adj < 0.05) %>% 
+  # mutate(Group = if_else(avg_log2FC < 0, 'Relapse_high', 'Relapse_low'))
+
+
+run_gsea <- function(df, annotations){
+  genelist = df %>% arrange(avg_log2FC) 
+  genelist.order = genelist$avg_log2FC
+  names(genelist.order) = as.character(genelist$Gene)
+  genelist.order = sort(genelist.order, decreasing = T)
+  df.gesa = GSEA(geneList = genelist.order, TERM2GENE = annotations ) # p.adjust < 0.05
+  return(summary(df.gesa) )
+
+}
+
+deg.hallmark.gsea <- run_gsea(DEGs_DR, annotations = hm_gs )
+deg.kegg.gsea <- run_gsea(DEGs_DR, annotations = kegg_gs   )
+deg.stromal.gsea <- run_gsea(DEGs_DR,  annotations = stromal_gs)
+
+write_tsv(deg.hallmark.gsea %>% mutate(GeneSet = 'Hallmark') %>% 
+            bind_rows(deg.kegg.gsea %>% mutate(GeneSet = 'KEGG')) %>% 
+            bind_rows(deg.stromal.gsea %>% mutate(GeneSet = 'Stromal')),
+          file = 'q.mb.cells/noIntegration/DEG_DvsR/all.DvsP.GSEA.q0.05.xls')
+
+```
+
+
+
+```{r DEGs enrichment}
+markers_genes.treatment['MYC', ]  # From volcano plot, MYC is primary-higher, thus ptc.1 is primary, and avg_log2FC >0 is primary -high
+DEGs_DR <- markers_genes.treatment %>% rownames_to_column('Gene') %>% 
+  mutate(Group = if_else(avg_log2FC < 0, 'Relapse_high', 'Relapse_low')) %>% 
+    filter(abs(avg_log2FC) > 0.585, p_val_adj < 0.05) 
+
+
+deg.hallmark <- compareCluster( Gene ~ Group, data = DEGs_DR,  fun="enricher", TERM2GENE = hm_gs ) %>% summary()
+deg.kegg <-  compareCluster( Gene ~ Group, data = DEGs_DR,  fun="enricher", TERM2GENE = kegg_gs ) %>% summary() #0
+deg.stromal <-  compareCluster( Gene ~ Group, data = DEGs_DR,  fun="enricher", TERM2GENE = stromal_gs ) %>% summary()
+
+# if it is 0, will raise Error:no applicable method for 'mutate' applied to an object of class
+write_tsv(deg.hallmark %>% mutate(GeneSet = 'Hallmark') %>% 
+            bind_rows(deg.kegg %>% mutate(GeneSet = 'KEGG')) %>% 
+            bind_rows(deg.stromal %>% mutate(GeneSet = 'Stromal')),
+          file = 'q.mb.cells/noIntegration/DEG_DvsR/all.DvsP.DEGenrich.q0.05.xls')
+
+```
+
+
+```{r gene expression plot, fig.width=6, fig.height=1.2}
+
+my.gene <- c('MYC', 'BTG1', 'CD79B', 'CD83', 'JUNB', 'DTX1', 'GNA13', 'SYK', 'TMSB4X', 'PRKCE') # DEGs in allprimary vs all relapse
+
+Idents(q.mb.p)   <- 'Sample'
+levels(q.mb.p)  <- order.sample[1:20]
+
+mat_ave <- AverageExpression(q.mb.p, group.by = 'Sample', return.seurat = T)@assays$SCT@data  
+exp.mat = as.matrix(mat_ave)
+
+stat.deg = as.data.frame(exp.mat) %>% rownames_to_column('Gene') %>% gather(Sample, value, -Gene) %>% 
+   left_join(phe) %>%  filter(Donor %in% c('MC3', 'MC203', 'MC205', 'MC202'), Sampling_time != 'Progress') %>% 
+  group_by(Gene) %>% mutate(median = median(value), Zero_n = sum(value ==0)) %>% 
+  filter( median > 0.1, Zero_n < 2) %>% 
+  wilcox_test( value ~ Sampling_time) %>% arrange(p) %>% 
+  mutate(is.lymchip = if_else(Gene %in% gene.lymphchip, 1, 0 ))
+
+my.gene = stat.deg %>% filter(is.lymchip == 1, p < 0.1) %>% pull(Gene)
+write_tsv(stat.deg %>% mutate(selected = if_else(Gene %in% my.gene, 1, 0 )), 'q.mb.cells/noIntegration/DEGs.DvsR.Gene.Selection.tsv')
+my.gene = c('MCL1', 'ZFP36L1', 'UBE2A', 'RELA','ID3', "DUSP2",'MYC', 'PRDM1',  "PRKCQ")
+
+df.gene = as.data.frame(exp.mat[my.gene,]) %>% 
+  rownames_to_column('Gene') %>% gather(Sample, value, -Gene) %>% 
+  left_join(phe) %>% 
+  filter(!grepl('R2',Sample), Sample != 'MC3Rl', Sampling_time != 'Progress' ) 
+
+
+ggline(df.gene %>% filter(Donor %in% c('MC3', 'MC203', 'MC205', 'MC202', 'MC206'), Sampling_time != 'Progress') %>% 
+         mutate(Gene = factor(Gene, levels = my.gene), Sampling_time = factor(Sampling_time, levels = c('Primary', 'Relapse'))),
+       x = 'Sampling_time', y = 'value', 
+       facet.by = 'Gene',  scale = 'free', nrow = 1,
+       group = 'Donor',   color = 'Donor', palette = col.patient) +
+    stat_compare_means(paired = T, label = '..p..') + 
+  scale_y_continuous(expand=expand_scale(mult=c(0.05, 0.1))) +
+  rremove('legend') +  scale_y_continuous(expand=expand_scale(mult=c(0.05, 0.1)))
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 6, height = 4, title = paste0('Primary vs relapse'))
+  
+
+```
+
+
+## MsigDB Pathway 
+
+```{r load package}
+library(msigdbr)
+library(org.Hs.eg.db)
+
+library(GSVA)
+library(parallel)
+library(GSEABase)
+#library(GSVAdata)
+
+```
+
+
+```{r setup ONCE (NOT RUN) }
+
+# build up genesets
+#  GSEA-C2: Curated gene sets
+#  GSEA-C5: Ontology gene sets
+#  GSEA-H: Hallmark gene sets
+
+geneSetFunc <- function(listIn){
+  sets <- Map(GeneSet, 
+              listIn, 
+              setName=names(listIn),
+              MoreArgs=list(geneIdType=SymbolIdentifier()))
+  GeneSetCollection(sets)
+}
+
+msigdb.collections.1 <- msigdbr(species = "Homo sapiens", category = c('C2'), subcategory = "CP:KEGG")
+msigdb.collections.2 <- msigdbr(species = "Homo sapiens", category = c('C5'), subcategory = "BP")
+msigdb.collections.3 <- msigdbr(species = "Homo sapiens", category = c('H'))
+msigdb.collections.4 <- read_tsv('~/OneDrive - KI.SE/Mac/Project/MCL_scRNAseq/_ref/Signatures from Lenz 2008 NEJM.gmt.txt') %>% gather(gs_name, human_gene_symbol)
+
+# once , cost time , direct load gs.collections
+msigdb.list <- list()
+for (i in 1:nrow(msigdb.collections.1)){
+  msigdb.list[[msigdb.collections.1$gs_name[i]]] <- append(msigdb.list[[msigdb.collections.1$gs_name[i]]],
+                                                              as.character(msigdb.collections.1$entrez_gene[i]))
+}
+for (i in 1:nrow(msigdb.collections.2)){
+  msigdb.list[[msigdb.collections.2$gs_name[i]]] <- append(msigdb.list[[msigdb.collections.2$gs_name[i]]],
+                                                              as.character(msigdb.collections.2$entrez_gene[i]))
+}
+
+for (i in 1:nrow(msigdb.collections.3)){
+  msigdb.list[[msigdb.collections.3$gs_name[i]]] <- append(msigdb.list[[msigdb.collections.3$gs_name[i]]],
+                                                              as.character(msigdb.collections.3$entrez_gene[i]))
+}
+
+
+for (i in 1:nrow(msigdb.collections.4)){
+  msigdb.list[[msigdb.collections.4$gs_name[i]]] <- append(msigdb.list[[msigdb.collections.4$gs_name[i]]],
+                                                              as.character(msigdb.collections.4$human_gene_symbol[i]))
+}
+
+
+
+
+for (i in names(msigdb.list)){
+  msigdb.list[[i]]=unique(msigdb.list[[i]])
+}
+
+gs.collections <- geneSetFunc(msigdb.list)
+
+saveRDS(gs.collections, '~/OneDrive - KI.SE/Mac/Project/MCL_scRNAseq/_ref/msigdb.gs.collection.RData')
+saveRDS(gs.collections.hallmark, '~/OneDrive - KI.SE/Mac/Project/MCL_scRNAseq/_ref/msigdb.gs.hallmark.RData')
+saveRDS(gs.collections, '~/OneDrive - KI.SE/Mac/Project/MCL_scRNAseq/_ref/msigdb.gs.BLymphoma_stromalGeneSig.RData')
+
+
+```
+
+#### RUN in the R : by sample / by cluster
+
+```{r prepare matrix}
+# by sample 
+mat_ave <- AverageExpression(q.mb.p, group.by = 'Sample', return.seurat = T)@assays$SCT@data  
+exp.mat = as.matrix(mat_ave)
+geneset.symbol=rownames(exp.mat)
+geneset.entrez=as.vector(mapIds(org.Hs.eg.db, geneset.symbol, 'ENTREZID', 'SYMBOL'))
+rownames(exp.mat)=geneset.entrez
+exp.mat=as.matrix(exp.mat[which(!(is.na(rownames(exp.mat)))),])
+
+
+```
+
+
+```{r plot GSVA : by sample}
+gs.hallmark <- read_rds('~/OneDrive - Karolinska Institutet//Mac/Project/MCL_scRNAseq/_ref/msigdb.gs.hallmark.RData')
+
+#run GSV
+GSVA.hallmark<- gsva(exp.mat, gs.hallmark, min.sz=10, max.sz=500, verbose=TRUE, parallel.sz=8)
+saveRDS(GSVA.hallmark, 'q.mb.cells/msigdb.Sample.hallmark.RData') ## MODIFY
+
+
+
+# all hallmark (need to copy to Console to run, so it can be saved)
+pdf(file = 'q.mb.cells/heatmap.hallmark.Sample.pdf', h = 9, w = 9)
+#pdf(file = 'q.mb.cells/heatmap.hallmark.Donor.diff.pdf', h = 9, w = 6)
+mat <- GSVA.hallmark
+rownames(mat) <- str_remove(rownames(mat), 'HALLMARK_')
+myheatmap(mat,
+           annotation_col = phe %>% select(Sample, Tissue, Donor, Sampling_time) %>% column_to_rownames('Sample') %>% as.data.frame(),
+                  annotation_colors = list(Tissue = col.tissue, Donor = col.patient[1:11], Sampling_time = col.samtime))
+dev.off()
+
+
+# # diff hallmarks
+
+#  filter pathway by comparsion  --------------
+
+cluster.1 = q.mb.p@meta.data %>% filter(Sampling_time == 'Primary' ) %>% pull(Sample) %>% unique()
+cluster.2 = q.mb.p@meta.data %>% filter(Sampling_time == 'Relapse' ) %>% pull(Sample) %>% unique()
+
+
+# if the each group's cluster is few, then the pvalue will be large
+wilcox.p  <- c()
+for (i in 1:nrow(GSVA.hallmark)) {
+  x <- GSVA.hallmark[i, cluster.1]
+  y <- GSVA.hallmark[i, cluster.2]
+  p <- wilcox.test(x,y)$p.value
+  wilcox.p <- c(wilcox.p, p)
+}
+
+sum(wilcox.p < 0.05) # 2 differ
+GSVA.hallmark[which(wilcox.p < 0.05),]
+
+# heatmap 
+pdf(file = 'q.mb.cells/heatmap.hallmark.Sample.diff.pdf', h = 4, w = 9)
+mat <- GSVA.hallmark[which(wilcox.p < 0.05),]
+rownames(mat) <- str_remove(rownames(mat), 'HALLMARK_')
+heat <- myheatmap(mat, 
+                  annotation_col = phe %>% select(Sample, Tissue, Donor, Sampling_time) %>% column_to_rownames('Sample') %>% as.data.frame(),
+                  annotation_colors = list(Tissue = col.tissue, Donor = col.patient[1:11], Sampling_time = col.samtime))
+dev.off()
+
+
+# boxplot
+gsva.diff = GSVA.hallmark[which(wilcox.p < 0.05),] %>% as.data.frame() %>% 
+  rownames_to_column('Pathway') %>% 
+  gather(Sample, GSVAscore, -Pathway) %>% left_join(phe)
+
+ggstripchart(gsva.diff %>% filter(Sampling_time != 'Progress'), 
+             x = 'Sampling_time', y = 'GSVAscore', color = 'Sampling_time', facet.by = 'Pathway', 
+             #add = "median_q1q3", error.plot = 'errorbar', 
+             add = 'boxplot', 
+             palette = col.samtime) +
+  stat_compare_means()
+
+```
+
+
+
+
+#### RUN on linux : by cells, which need computational source
+ 
+```{sh run GSVA for cell Long time}
+Rscript src/5.1.runGSVA.cell.R & # modify filename of input and output, input assay, or core number
+```
+
+
+```{r read GSVA by cell }
+# read GSVA  result ------
+GSVA.hallmark <- readRDS('q.mb.cells/msigdb.cell.gshallmark.RData')
+GSVA.lymphoma <- readRDS('q.mb.cells/msigdb.cell.gslymphoma.RData')
+GSVA.gscollection <- GSVA.hallmark
+#GSVA.gscollection <- GSVA.lymphoma
+rownames(GSVA.gscollection)
+
+# prepare group and GSVAscore
+cell.meta = q.mb@meta.data  %>%
+  select(CellBarcode, Donor, Sample = orig.ident,
+           Cluster = celltype.B, celltype.B, CNV_cluster) %>% 
+  filter(Donor != 'Normal')
+
+df.gscollection =  as.data.frame(GSVA.gscollection)  %>% 
+  rownames_to_column('gs.name') %>% 
+  gather(CellBarcode, GSVAscore, -gs.name) %>% 
+  filter(CellBarcode %in% cell.meta$CellBarcode) %>% 
+  mutate(Database = str_remove_all(gs.name, '_.*'),
+         Pathway = str_split_fixed(gs.name, pattern = '_', n =2)[,2]) %>% 
+         #Pathway = str_to_sentence(Pathway)) %>% 
+  inner_join(cell.meta) 
+
+
+```
+
+
+
+### GSVA: clusters
+```{r GSVA clusters }
+# statistic
+stat.gs = df.gscollection %>%
+  filter(Donor != 'Normal') %>% 
+  group_by(gs.name, Database, Pathway) %>%
+  wilcox_test(GSVAscore ~ Cluster, p.adjust.method = "BH" ) %>% 
+  add_y_position() %>% 
+  add_significance("p")  
+
+stat.gs %>% filter(p < 0.05) %>% pull(gs.name) %>% unique()
+
+stat.gs = stat.gs %>% arrange(match(Pathway, order_gs)) %>%
+  mutate(x.position = nrow(stat.gs):1, x.min = x.position-0.5, xmax = x.position + 0.5)
+  
+
+# boxplot 
+pb <- ggboxplot(df.gscollection, x = 'Cluster', y = 'GSVAscore', fill = 'Cluster', 
+                facet.by  = 'Pathway',   outlier.shape = NA,
+          order = order_Bsubtypes[4:7], palette = color_Bsubtypes[4:7]) + 
+  compare_means(ref.group = '.all.' )
+ stat_pvalue_manual(stat.gs, x = 'Pathway') +   coord_flip() + rremove('ylab')
+ggsave(pb, filename =  'q.mb.cells/boxplot.gslymphoma.Cell.Treatment.pdf', w = 8, h = 10)
+
+
+```
+
+
+### GSVA: Treatment  -NOT RUN, 
+because cells number is large, so most of the pvalue are significant, it is better to run in  clusters/samples to compare the group
+
+```{r GSVA treatment }
+# statistic
+stat.gs = df.gscollection %>%
+  filter(Donor != 'Normal') %>% 
+  group_by(gs.name, Database, Pathway) %>%
+  wilcox_test(GSVAscore ~ Sample, p.adjust.method = "BH" ) %>% 
+  add_y_position() %>% 
+  add_significance("p")  
+
+avg.gs = df.gscollection %>% 
+  filter(Donor != 'Normal') %>% 
+  group_by(gs.name, Database, Pathway, Sample) %>%
+  summarise(avg.gs.score = median(GSVAscore)) %>% spread(Sample, avg.gs.score) %>% 
+  mutate(FC_score = abs(MZL1_post - MZL1_pre ) ) %>% 
+  left_join(stat.gs) # check FC_score to hightlight gene set if it is hard to see from fig
+
+sum(stat.gs$p < 0.05)
+
+stat.gs = stat.gs %>% arrange(match(Pathway, order_gs)) %>%
+  mutate(x.position = nrow(stat.gs):1, x.min = x.position-0.5, xmax = x.position + 0.5)
+  
+# pvalue barplot
+ggbarplot( stat.gs %>% mutate(`-log10_p` = -log10(p)), 
+           x = 'Pathway', y = '-log10_p', order = order_gs, fill = 'p.signif') + 
+  coord_flip()
+
+# boxplot 
+pb <- ggboxplot(df.gscollection, x = 'Pathway', y = 'GSVAscore', fill = 'Sample', outlier.shape = NA,
+          order = rev(order_gs), palette = color_donor) +
+ stat_pvalue_manual(stat.gs, x = 'Pathway') +   coord_flip() + rremove('ylab')
+ggsave(pb, filename =  'q.mb.cells/boxplot.gslymphoma.Cell.Treatment.pdf', w = 8, h = 10)
+
+
+```
+
+
+
+```{r gene from sig.gs}
+degs.patient = read_tsv('q.mb.cells/DEGs.Donor.q0.01.FC1.5.tsv') 
+all.genes.patient = read_tsv('q.mb.cells/DEGs.Donor.tsv') 
+
+#sig.gs = "OXIDATIVE_PHOSPHORYLATION"
+sig.gs = "PI3K_AKT_MTOR_SIGNALING"
+
+# only plot degs
+select.degs = intersect(degs.patient$Gene, hallmark_id$gene[hallmark_id$term == sig.gs]) 
+intersect(c(markers.pik3, markers.pikPs), hallmark_id$gene[hallmark_id$term == sig.gs]) 
+
+pv.diff <- VlnPlot( q.mb, features =  select.degs, pt.size = 0, ncol = 3,combine = T, assay = 'SCT',
+                    group.by = 'Donor', cols = color_donor) &
+    stat_summary(fun.y = median, geom='point', size = 15, colour = "red", shape = 95) &
+  stat_compare_means(  label = "p.signif", comparisons = list(c('Normal', 'MZL1'))) & 
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) &
+  NoLegend() & rremove('ylab')  & rremove('xlab')
+
+# plot all genes in the genesets
+select.genes = all.genes.patient %>% 
+  filter(Gene %in% hallmark_id$gene[hallmark_id$term == sig.gs] | Gene %in% c(markers.pik3, markers.pikPs) ) %>% 
+  arrange(-avg_log2FC, -pct.1, pct.2)
+
+DoHeatmap(q.mb, features = select.genes$Gene, assay = 'SCT',
+          group.by = 'Donor', group.colors = color_donor )
+
+ggsave(last_plot(), filename = paste0('q.mb.cells/heatmap.hallmark.Donor.', sig.gs, '.pdf'), h = 4, w = 4)
+
+```
+
+
+
+```{r gene from mutliple sig.gs}
+all.genes.patient = read_tsv('q.mb.cells/DEGs.Donor.tsv') 
+
+select.gs = c("OXIDATIVE_PHOSPHORYLATION", "PI3K_AKT_MTOR_SIGNALING", "INTERFERON_ALPHA_RESPONSE" ,
+           "TNFA_SIGNALING_VIA_NFKB" , "TGF_BETA_SIGNALING")
+
+
+# plot all genes in the genesets
+select.genes = hallmark_id %>% filter(term %in% select.gs)  %>% 
+  inner_join(all.genes.patient, by = c('gene' = 'Gene')) %>% distinct() %>% 
+  arrange( match(term, select.gs), -avg_log2FC, -pct.1, pct.2) 
+
+my.doheat <- function(x){
+  DoHeatmap(q.mb, features = select.genes$gene[select.genes$term == x], label = F,
+          group.by = 'Donor', group.colors = color_donor, assay = 'SCT' )
+}
+
+p.list <- map(select.gs,my.doheat )
+
+hight = select.genes %>% group_by(term) %>% summarise(N_gene = n()) %>% arrange(-match(term, select.gs)) %>%  pull(N_gene)
+
+p <- plot_grid(plotlist = p.list, ncol = 1, 
+               rel_heights = ceiling(hight/min(hight)))
+ggsave(p, filename = 'q.mb.cells/heatmap.hallmark.Donor.selectGS.pdf', h = 15, w = 5)
+
+```
+
+
+
+
+
+# Trajectory by Monocle2
+
+## malignant B
+### 1.1 all malignant B cells in BM samples
+```{r loadData: MalignantB}
+library(monocle)
+
+# format conversion ------ 
+#seu <- readRDS('results/04_Malignant.rds')
+seu <- subset(q.mb , subset = Major_cell_type == 'Malignant')
+seu$Cluster <- seu$celltype.B
+
+
+saveRDS(seu, 'q.mb.cells/02.malignantB.norm.rds')
+DimPlot(seu, group.by = 'SCT_snn_res.0.25') 
+DimPlot(seu, group.by = 'Cluster') 
+DimPlot(seu, group.by = 'orig.ident')
+DimPlot(seu, group.by = 'CNV_cluster')
+
+```
+
+
+-Dimplot
+```{r save & Dimplot}
+seu <- readRDS('q.mb.cells/02.malignantB.norm.rds')
+
+w = 6
+h = 6
+reduction = 'umap'
+sel.clust = "SCT_snn_res.0.25"
+
+# by samples 
+ggsave( DimPlot(seu, reduction = reduction, group.by = "orig.ident", repel = T, label = F, label.size = 7) + NoAxes()  +  
+          labs(title = paste0('by Sample') ) + 
+          scale_color_manual(values = color_sample) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Sample.T.png'), w = w+1, h = h)
+
+ggsave( DimPlot(seu, reduction = reduction, group.by = "orig.ident", repel = T, label = T, label.size = 7) + NoAxes()  +  
+          labs(title = paste0('by Sample') ) +  NoLegend() + 
+          scale_color_manual(values = color_sample) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Sample.T.L.png'), w = w, h = h)
+
+
+
+# by clusters
+ggsave( DimPlot(seu, reduction = reduction, group.by = 'celltype.B', repel = T, label = F, label.size = 7) + NoAxes()  +  
+          labs(title = paste0('by B subcluster') ) + 
+          scale_color_manual(values = color_Bsubtypes) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Cluster.T.png'), w = w+1, h = h)
+
+
+ggsave( DimPlot(seu, reduction = reduction, group.by = 'celltype.B', repel = T, label = T, label.size = 7) + NoAxes()  +  
+          labs(title = paste0('by B subcluster') ) + NoLegend() +
+          scale_color_manual(values = color_Bsubtypes) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Cluster.F.png'), w = w, h = h)
+
+# by cell cycle
+ggsave( DimPlot(seu, reduction = reduction, group.by = 'Phase', repel = T, label = F, label.size = 7) + NoAxes()  +  
+          labs(title = paste0('by Cell cycle') ) + 
+          scale_color_manual(values = color_cellcycle) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.CellCycle.T.png'), w = w+1, h = h)
+
+
+# plot clonal BCR
+ggsave( DimPlot(q.mb, reduction = reduction, group.by = "domaintClone", repel = T, label = F, label.size = 7) + NoAxes()  +  
+          scale_color_manual(values = color_clone1) + 
+          labs(title = paste0('by BCR Clone') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.VDJ.T.png'), w = w+1, h = h)
+
+
+```
+
+
+
+-run trajectory time consum
+```{r runTrajectory}
+#seu <- readRDS('results/02.malignantB.norm.rds')
+my.dir = 'q.mb.cells/'
+dir.create(my.dir)
+
+gene.data <- data.frame(gene_short_name = rownames( seu@assays$SCT@counts), row.names = rownames( seu@assays$SCT@counts))
+fd <- new('AnnotatedDataFrame', data = gene.data)
+
+HSMM <- newCellDataSet(seu@assays$SCT@counts, phenoData = new('AnnotatedDataFrame', data =  seu@meta.data),
+                       featureData = fd, 
+                       lowerDetectionLimit = 0, expressionFamily = negbinomial.size())
+
+HSMM <- detectGenes(HSMM)
+print(head(fData(HSMM)))
+expressed_genes <- row.names(subset(fData(HSMM), num_cells_expressed >= 10))
+
+HSMM <- estimateSizeFactors(HSMM)
+HSMM <- estimateDispersions(HSMM)
+
+# rm(q.relapse)
+# gc()
+#save(HSMM, file=paste0(my.dir,'/trajectory.malignantB.Robj'))
+
+diff_test_res <- differentialGeneTest(HSMM[expressed_genes,], fullModelFormulaStr = '~Cluster', cores = 8)
+#diff_test_res <- differentialGeneTest(HSMM[expressed_genes,], fullModelFormulaStr = '~ orig.ident', cores = 8)
+diff_test_res <- diff_test_res[order(diff_test_res$qval),]
+ordering_genes <- row.names(subset(diff_test_res, qval < 0.01))
+length(ordering_genes)
+ordering_genes <- ordering_genes[1:2000]
+length(ordering_genes)
+HSMM <- setOrderingFilter(HSMM, ordering_genes)
+plot_ordering_genes(HSMM)
+#plot_pc_variance_explained(HSMM, return_all = FALSE)
+
+#save(HSMM, file='q.mb.cells/trajectory.malignantB.Robj')
+
+#load('q.mb.cells/trajectory.malignantB.Robj')
+
+HSMM <- reduceDimension(HSMM, max_components = 2,method = 'DDRTree')
+#save(HSMM, file='q.mb.cells/trajectory.malignantB.DDRTree.Robj')
+
+HSMM <- orderCells(HSMM)
+# save(HSMM, file='q.mb.cells/trajectory.malignantB.DDRTree.order.Robj')
+# 
+# load('q.mb.cells/trajectory.malignantB.DDRTree.order.Robj')
+#HSMM <- orderCells(HSMM, root_state = 1) # re-run to set root
+
+#pdf('q.mb.cells/trajectory.cluster.pdf', width = 12, height = 16)
+pdf(paste0(my.dir, '/trajectory.cluster.pdf'), width = 4, height = 4)
+plot_ordering_genes(HSMM)
+plot_cell_trajectory(HSMM, color_by = 'Cluster', cell_size = 0.5) + scale_color_manual(values = color_Bsubtypes[4:7])
+# plot_cell_trajectory(HSMM, color_by = 'Cluster', cell_size = 0.5) + scale_color_manual(values = c("#F8766D", "#CD9600", "#7CAE00", "#00BE67", "#00BFC4", "#00A9FF", "#C77CFF", "#FF61CC")) + facet_wrap(~Cluster, ncol = 2)
+plot_cell_trajectory(HSMM, color_by = 'orig.ident', cell_size = 0.5) + scale_color_manual(values = color_sample[1:2])
+plot_cell_trajectory(HSMM, color_by = 'orig.ident', cell_size = 0.5) + scale_color_manual(values = color_sample[1:2]) + facet_wrap(~orig.ident, ncol = 2)
+plot_cell_trajectory(HSMM, color_by = 'CNV_cluster', cell_size = 0.5) + scale_color_manual(values = color_cnv)
+plot_cell_trajectory(HSMM, color_by = 'State', cell_size = 0.5)
+plot_cell_trajectory(HSMM, color_by = 'Pseudotime', cell_size = 0.5)
+dev.off()
+
+save(HSMM, file=paste0(my.dir,'trajectory.malignantB.Robj'))
+
+```
+
+
+From the CNV pattern, we see the two CNV patterns was different , may need to try seperate the two CNV pattern and then run trjectory
+
+
+### 2. DEGs 
+```{r DEGs in pesudotime}
+# Finding Genes that Change as a Function of Pseudotime
+
+my_pseudotime_de   <- differentialGeneTest(HSMM, fullModelFormulaStr = '~sm.ns(Pseudotime)', cores = 6)
+save(my_pseudotime_de, file=(paste0(my.dir , 'trajectory.my_pseudotime_de.Robj')))
+
+my_pseudotime_gene <- subset(my_pseudotime_de, use_for_ordering=='TRUE') %>% arrange(qval) %>% head(200)
+my_pseudotime_cluster <- plot_pseudotime_heatmap(HSMM[as.character(my_pseudotime_gene$gene_short_name), ],
+                                                 num_clusters = 8,
+                                                 cores = 6,
+                                                 show_rownames = TRUE,
+                                                 return_heatmap = TRUE)
+pdf(paste0(my.dir ,'trajectory.genes_in_pseudotime.pdf'), width = 6, height = 20)
+print(my_pseudotime_cluster)
+dev.off()
+```
+
+
+For the cell density of each sample in the trajectory (Cell reports Fig.2I), can be achieved by: 1. get the coordinate of cells from trajectory object, and then plot the desentiy. The plots could be use to investigate the biological meannign of branch point accroding to sample types.
+
+### 3. cell density
+
+```{r cell density TO RUN}
+meta1 <- HSMM@phenoData@data
+meta2 <- HSMM@reducedDimS
+rownames(meta2) <- c('Dim1','Dim2')
+meta  <- cbind(meta1, t(meta2))
+
+m1 <- meta[which(meta$orig.ident == 'MZL1_pre'),]
+m2 <- meta[which(meta$orig.ident == 'MZL1_post'),]
+
+Nbin=5
+pdf(paste0(my.dir, '/trajectory.sample.density.pdf'), width = 11.5, height = 11)
+ggplot(m1, aes(x=Dim1, y=Dim2)) +
+  geom_point(color = 'gray70', size = 1) +
+  #xlim(-7.5, 6) +
+  #ylim(-5, 7.5) +
+  stat_density2d(aes(x = Dim1, y = Dim2, colour = as.factor(..level..), size = 0.1), fill=NA, bins=Nbin, geom = "polygon" ) + 
+  scale_colour_manual(values = c(colorRamps::matlab.like2(Nbin-1),'red')) +
+  theme(panel.background = element_rect(fill = 'white', colour = 'black', size = 6),
+        plot.background = element_rect(fill = 'white'),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position='none')
+ggplot(m2, aes(x=Dim1, y=Dim2)) +
+  geom_point(color = 'gray70', size = 1) +
+  #xlim(-7.5, 6) +
+  #ylim(-5, 7.5) +
+  stat_density2d(aes(x = Dim1, y = Dim2, colour = as.factor(..level..), size = 0.1), fill=NA, bins=Nbin, geom = "polygon" ) + 
+  scale_colour_manual(values = c(colorRamps::matlab.like2(Nbin-1),'red')) +
+  theme(panel.background = element_rect(fill = 'white', colour = 'black', size = 6),
+        plot.background = element_rect(fill = 'white'),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position='none')
+dev.off()
+
+
+```
+
+
+### 4. branches
+```{r branches}
+# Analyzing Branches in Single-Cell Trajectories
+
+BEAM_res_pt1 <- BEAM(HSMM, branch_point = 1, cores = 6)
+BEAM_res_pt1 <- BEAM_res_pt1[order(BEAM_res_pt1$qval),]
+table(BEAM_res_pt1$qval < 1e-100) #26genes
+pdf(paste0(my.dir ,'/trajectory.BEAM_res_pt1.pdf'), width = 4, height = 6)
+my_branched_heatmap <- plot_genes_branched_heatmap(HSMM[row.names(subset(BEAM_res_pt1, qval < 1e-100)),],
+                                                   branch_point = 1,
+                                                   num_clusters = 3,  #could be modified
+                                                   cores = 6,
+                                                   use_gene_short_name = TRUE,
+                                                   show_rownames = TRUE,
+                                                   return_heatmap = TRUE)
+dev.off()
+
+png(paste0(my.dir , 'trajectory.BEAM_res_pt1.cellfate1_state3.cellfate2_state4.png'), 300, 500)
+plot_genes_branched_pseudotime(HSMM[c("HMGB1","CDCA7","EIF1"),], # select interesting genes
+                               branch_point = 1,
+                               ncol = 1) ### cell-fate-1 = state-3, cell-fate-2 = state-4
+dev.off()
+
+BEAM_res_pt2 <- BEAM(HSMM, branch_point = 2, cores = 6)
+BEAM_res_pt2 <- BEAM_res_pt2[order(BEAM_res_pt2$qval),]
+table(BEAM_res_pt2$qval < 1e-100)
+pdf(paste0(my.dir , 'trajectory.BEAM_res_pt2.pdf'), width = 15, height = 50)
+my_branched_heatmap <- plot_genes_branched_heatmap(HSMM[row.names(subset(BEAM_res_pt2, qval < 1e-100)),],
+                                                   branch_point = 2,
+                                                   num_clusters = 5,    #could be modified
+                                                   cores = 6,
+                                                   use_gene_short_name = TRUE, 
+                                                   show_rownames = TRUE,
+                                                   return_heatmap = TRUE)
+dev.off()
+png(paste0(my.dir , 'trajectory..BEAM_res_pt2.cellfate1_state5.cellfate2_state2.png'), 300, 500)
+plot_genes_branched_pseudotime(HSMM[c("CKS1B","FUS","H3F3B"),], # select interesting genes
+                               branch_point = 2,
+                               ncol = 1) ### cell-fate-1 = state-5, cell-fate-2 = state-2
+dev.off()
+
+BEAM_res_pt3 <- BEAM(HSMM, branch_point = 3, cores = 6)
+BEAM_res_pt3 <- BEAM_res_pt2[order(BEAM_res_pt3$qval),]
+table(BEAM_res_pt3$qval < 1e-50)
+pdf(paste0(my.dir , 'trajectory.BEAM_res_pt3.pdf'), width = 8, height = 25)
+my_branched_heatmap <- plot_genes_branched_heatmap(HSMM[row.names(subset(BEAM_res_pt3, qval < 1e-50)),],
+                                                   branch_point = 3,
+                                                   num_clusters = 5,
+                                                   cores = 6,
+                                                   use_gene_short_name = TRUE,
+                                                   show_rownames = TRUE,
+                                                   return_heatmap = TRUE)
+dev.off()
+png(paste0(my.dir , 'trajectory..BEAM_res_pt3.cellfate1_state5.cellfate2_state2.png'), 300, 500)
+plot_genes_branched_pseudotime(HSMM[c("CKS1B","FUS","H3F3B"),],
+                               branch_point = 3,
+                               ncol = 1) ### cell-fate-1 = state-5, cell-fate-2 = state-2
+dev.off()
+
+save(BEAM_res_pt1, BEAM_res_pt2,BEAM_res_pt3, file = paste(my.dir, 'trajectory.BEAM_res.Robj'))
+
+```
+
+
+### inferCNV 
+plot the heatmap together
+```{r plot infercnv}
+library(infercnv)
+
+
+infercnv_obj =  readRDS('infercnv/run.final.infercnv_obj')
+
+# lost the sample group info
+plot_cnv(infercnv_obj, ref_title = "Healthy (B cell)", obs_title = "Patient (B cell)", out_dir = 'infercnv/',
+          png_res = 900, output_filename = 'heatmap_CNV.png', output_format = 'png')
+
+```
+
+
+
+```{r reproduce the heatmap of InferCNV : NOT FINISH}
+infercnv_obj =  readRDS('infercnv/result/run.final.infercnv_obj')
+
+# gene order ----
+write_tsv(infercnv_obj@gene_order %>% rownames_to_column('Gene'), 'infercnv/result/geneorder.txt')
+gene.order = read_tsv('infercnv/result/geneorder.txt')
+
+# cell order  (NOT ready )----
+library(TreeTools)
+trees <- phytools::read.newick('infercnv/result/infercnv.observations_dendrogram.txt')
+annotations_file = read_tsv('infercnv/input/MC3.cellannotation.forinferCNV.txt', col_names  = c('CellBarcode', 'Input_type'))
+annotations_cell = bm@meta.data %>% select(Sample = orig.ident, Celltype = celltype_manu, Cluster = SCT_snn_res.0.5) %>%
+  rownames_to_column('CellBarcode') %>% left_join(annotations_file)
+
+# heatmap plot ------ 
+
+library(pheatmap)
+library(grid)
+
+chr.line = gene.order %>% mutate(gene_order = row_number()) %>% group_by(chr) %>% summarise(x = max(gene_order)) %>% arrange(x) %>% pull(x)
+cell.line = cell.order %>% group_by(Sample) %>% summarise(x = max(cellorder)) %>% arrange(x) %>% pull(x)
+
+#pdf('infercnv/result/test.3D.pdf', w = 8, h = 4) # file size is too big
+png('infercnv/result/test.3D.png', w = 20, h = 10, units = "in", res = 300)
+pheatmap::pheatmap(t(infercnv_obj@expr.data), 
+                   scale = 'none', cluster_cols = F, cluster_rows = F, show_rownames = F, show_colnames = F,
+                   color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(15),
+                   breaks = c(seq(0.85, 1.15, length.out= 15))
+                    # annotation_col = infercnv_obj@gene_order %>% select(chr),
+                    #  annotation_row = cell.order %>% select(Sample, Celltype, Cluster),
+                  #annotation_colors  = c(Sample = as.factor(color_sample), Celltype = as.factor(color_cluster) )
+                   )
+
+# grid.lines did not work
+grid.lines(x )
+grid.lines(x = c(0, 0.5, 1, chr.line[-22]), y = c(-Inf, Inf), gp = gpar(lty = 1, lwd = 1))
+grid.lines(x = c(-Inf, Inf), y = cell.line[1], gp = gpar(lty = 2, lwd = 10))
+
+dev.off()
+
+
+
+
+```
+
+
+### SHM
+
+```{sh}
+
+# input: filtered_contig.fasta
+# need internal_data directory in current working path
+# run: WSL workshop
+ for i in `ls | cut -f 1 -d '.' -`; do 
+    /mnt/e/huiwan/software/ncbi-igblast-1.16.0/bin/igblastn \
+     -germline_db_V  /mnt/e/huiwan/software/ncbi-igblast-1.16.0/database/human_germline/human_GL_V \
+     -germline_db_J  /mnt/e/huiwan/software/ncbi-igblast-1.16.0/database/human_germline/human_GL_J \
+     -germline_db_D  /mnt/e/huiwan/software/ncbi-igblast-1.16.0/database/human_germline/human_GL_D \
+     -auxiliary_data /mnt/e/huiwan/software/ncbi-igblast-1.16.0/optional_file/human_gl.aux \
+     -query ${i}.filtered_contig.fasta \
+     -outfmt 19 \
+     -organism human -domain_system imgt -ig_seqtype Ig \
+     -num_threads 8 > igblast.${i}.txt;
+ done
+ 
+# output: igblast.txt
+```
+
+
+
+```{r read shm}
+library(alakazam)
+library(shazam)
+library(djvdj)
+
+
+cal_shm <- function(sample, dir.shm, dir.bcr) {
+  # sample = 'MC3D_BM'
+  # dir.shm = 'SHM/'
+  # dir.bcr = 'cellranger/'
+  print(sample)
+  
+  df.igblast = read_tsv(paste0(mydir, '/igblast.', sample, '.txt'), col_names = T)
+  
+  df.bcr = read.csv(paste0(dir.bcr, sample, '/outs/per_sample_outs/', sample,'/vdj_b/filtered_contig_annotations.csv'))# MC3
+  
+  # df.bcr = read_tsv('BCR/SHM/all_tumor_sample.SHM.tsv') 
+  
+  df.v_shm.freq <- observedMutations(df.igblast, sequenceColumn="sequence_alignment",
+                                  germlineColumn="germline_alignment",
+                                  regionDefinition=IMGT_V_BY_SEGMENTS, 
+                                  combine=TRUE, 
+                                  frequency=T,
+                                  nproc=1) %>%
+        select(contig_id = sequence_id, v_shm = mu_freq  )  %>% mutate(v_shm = v_shm * 100)
+    
+  df.v_shm.uniq = df.bcr %>% left_join(df.v_shm.freq) %>%  
+        mutate(chain = if_else(chain == 'IGH', 'SHM_VH', 'SHM_VL')) %>% 
+        group_by(barcode, chain) %>%
+        top_n(1, umis) %>%  
+        top_n(1, reads) %>%  
+        select(barcode, chain, v_shm) %>% 
+        ungroup() %>%
+        spread(chain, v_shm) %>% 
+        mutate(CellBarcode = str_c(phe$Sample[phe$orig.ident == sample], '_', barcode)) 
+    
+    return(df.v_shm.uniq)
+
+} 
+
+# read & calculate shm
+
+df.v_shm.1 <- map_df(.f = cal_shm, .x = phe %>% filter(Cancer_type == "MCL", !Donor %in% c("MC3", "MC201")) %>% pull(orig.ident)  , dir.shm = 'SHM/', dir.bcr = 'cellranger/' )
+
+df.v_shm.2 <- map_df(.f = cal_shm, .x = phe %>% filter( Donor =="MC3") %>% pull(orig.ident) , dir.shm = 'SHM/', dir.bcr = 'cellranger/'  )
+
+df.v_shm = df.v_shm.1 %>% bind_rows(df.v_shm.2)
+
+write_tsv(df.v_shm, 'SHM/all_tumor_sample.SHM.tsv')
+
+
+
+```
+
+
+```{r add shm}
+q.mb$SHM_VH <- NULL
+q.mb$SHM_VL <- NULL
+q.mb$SHM_VH_rank <- NULL
+q.mb$barcode <- NULL
+
+q.mb@meta.data <- q.mb@meta.data %>% 
+    left_join(df.v_shm  %>% select(-barcode)) %>% 
+    mutate(SHM_VH_rank = if_else(SHM_VH==0, 'none',
+                                 if_else(SHM_VH <= 2, 'low',
+                                         if_else(SHM_VH > 2, 'high', 'NA'))))
+
+rownames(q.mb@meta.data) <- q.mb$CellBarcode
+
+table(q.mb$SHM_VH_rank) 
+
+FeaturePlot(q.mb, features = 'SHM_VH')
+
+ggstripchart(q.mb@meta.data %>% mutate(orig.ident = factor(orig.ident, levels = order_sample)), 
+             x = 'celltype.B', y = 'SHM_VH', facet.by = 'orig.ident', 
+             add = "median", add.params = list(color = 'black', shape = 95 , linetype = 2),
+             error.plot = "crossbar", 
+             color  = 'celltype.B', palette = color_Bsubtypes_new) + 
+  coord_cartesian(ylim = c(0.06, 0.08)) + NoLegend()
+
+ggsave(last_plot(), file = 'q.mb.cells/boxplot.SHM.cluster.pdf', w = 4, h = 3)
+
+
+
+```
+
+
+
+
+
+
+
+```{r  cal SHM from scRNAseq  BETTER TO redo after merge SHM, fig.height=1.2, fig.width=2.5}
+df_shm = read_tsv('~/OneDrive - Karolinska Institutet/Mac/Project/MCL_scRNAseq/202306_batch3/SHM/all_tumor_sample.SHM.tsv') %>% 
+  mutate(Sample = str_remove(CellBarcode, '_.*'))
+
+# shm
+pb_shm <- ggbarplot(df_shm %>% mutate(Sample = factor(Sample, levels = order.sample)) ,
+             x = 'Sample', y = 'SHM_VH',  
+           fill = 'Sample', palette = col.sample,
+           x.text.angle = 90, 
+           sort.val = "asc",
+            add = "median_mad") + rremove('legend')  + rremove('xlab')
+
+ggsave(pb_shm, file = '~/OneDrive - Karolinska Institutet/Mac/Project/MCL_scRNAseq/202306_batch3/SHM/sample.vh_shm.pdf', w = 5, h = 3)
+
+
+df_shm_sample = df_shm %>% group_by(Sample) %>% 
+  summarise(VH_SHM_median = round(median(SHM_VH, na.rm = T), 2),VL_SHM_median = round(median(SHM_VL, na.rm = T), 2) )
+write_tsv(df_shm_sample, '~/OneDrive - Karolinska Institutet/Mac/Project/MCL_scRNAseq/202306_batch3/SHM/sample.SHM.xls')
+
+topptx(pb_shm, filename = outfile, title = 'Dominant clone', append = T, h = 3, w = 6)
+```
+
+
+```{r read bcr}
+
+read_bcr <- function(sample) {
+  read_tsv(paste0('BCR/SHM/igblast.',  phe$orig.ident[phe$Sample == sample], '.txt')) %>% 
+    select(sequence_id, locus,	productive,	v_call,	d_call,	j_call,	v_identity,	sequence_alignment,	v_sequence_alignment,	fwr1,	cdr1,	fwr2,	cdr2,	fwr3,	cdr3,	fwr4,	cdr3_aa) %>% 
+    mutate(Sample = sample)
+
+}
+
+df.bcr <- map_df(phe$Sample[phe$Cancer_type == 'MCL' & phe$Donor != 'MC201'],read_bcr ) 
+df.bcr = df.bcr %>% left_join(phe %>% select(Sample, orig.ident)) %>%  mutate(CellBarcode = str_c(orig.ident, "_",str_remove_all(sequence_id, '_contig.*')))
+write_tsv(df.bcr, 'BCR/SHM/igblast.18samples.tsv')
+
+
+
+dominant.bcr  = df.bcr %>% right_join( clone.dominant %>% ungroup() %>% select(Sample, cdr3_aa = cdr3) %>% cSplit( 'cdr3_aa',  sep =  ';', 'long') %>% mutate(cdr3_aa = str_remove(str_remove(cdr3_aa, '^C'), '[FW]$'))) %>% 
+  filter(CellBarcode %in% q.mb.p$CellBarcode) %>% 
+  group_by(locus,	productive,	v_call,	d_call,	j_call,	v_identity,	sequence_alignment,	v_sequence_alignment,	fwr1,	cdr1,	fwr2,	cdr2,	fwr3,	cdr3,	fwr4,	cdr3_aa, Sample) %>% 
+  summarise(N_cells = n_distinct(CellBarcode))
+write_tsv(dominant.bcr, 'BCR/BCRsequences.dominant.pctMT5.bySample.xls')
+
+
+
+pb_dominant <- dominant.bcr %>% filter(N_cells > 2, locus == 'IGH') %>% 
+  mutate(Sample = factor(Sample, levels = order.sample) )%>% 
+               ggbarplot(. ,  x = 'Sample', y = 'N_cells',  position = position_fill(),
+           fill = 'Sample', palette = col.sample,
+           x.text.angle = 90) + rremove('legend') + rremove('xlab')
+topptx(pb_dominant, filename = outfile, title = 'dominant clones', append = T, h = 3, w = 6)
+
+pb_dominant.colbyClone <- dominant.bcr %>% filter(N_cells > 2, locus == 'IGH') %>% 
+  arrange(-N_cells) %>% group_by()
+  mutate(Sample = factor(Sample, levels = order.sample) )%>% 
+               ggbarplot(. ,  x = 'Sample', y = 'N_cells',  position = position_fill(),
+           fill = 'Sample', palette = col.sample,
+           x.text.angle = 90) + rremove('legend') + rremove('xlab')
+
+```
+
+
+
+```{r add dominant clone, fig.height=1.2, fig.width=2.5}
+clones = q.mb.p@meta.data %>% filter(VDJ_manu == TRUE) %>% 
+  left_join(df.bcr %>% select(CellBarcode, ))
+  group_by(Sample, cdr3, v_gene, j_gene, isotype) %>% summarise(freq = n()) %>%
+  ungroup() %>% group_by(Sample) %>% mutate(Total_clone = sum(freq), percent = freq/Total_clone * 100) %>% 
+  ungroup() %>%  
+  group_by(cdr3, v_gene, j_gene )  %>% arrange(-percent)  %>% mutate(clone_id = cur_group_id()) 
+
+head(clones)  
+
+clone.dominant = clones %>% filter(percent > 5) %>% mutate(domaint = 'Dominant')
+
+write_tsv(clones %>% left_join(clone.dominant), paste('q.mb.cells/VDJ.clones.tsv'))
+
+# barplot dominant percentage
+pb_dominant <- ggbarplot(clone.dominant %>% mutate(Sample = factor(Sample, levels = order.sample)) , 
+                         x = 'Sample', y = 'percent',  
+           fill = 'Sample', palette = col.sample,
+           x.text.angle = 90) + rremove('legend') + rremove('xlab')
+
+topptx(pb_dominant, filename = outfile, title = 'v_gene', append = T, h = 3, w = 6)
+
+# q.p@meta.data = q.p@meta.data  %>% left_join(clone.dominant) %>% 
+#   mutate( domaintClone =  if_else(VDJ == TRUE, 
+#                                   if_else( !is.na(domaint) , 'Dominant', 'Minor') , 'NA'))
+# 
+# rownames(q.p@meta.data) = colnames(q.p@assays$RNA)
+```
+
+
+```{r plot VDJ usage, fig.height=2, fig.width=2}
+
+gb_vh <- ggbarplot( clone.dominant %>% left_join(phe) %>% group_by(v_gene, Sample) %>% summarise(N_sample = n_distinct(Sample)),
+                    y = 'v_gene', x = 'N_sample', fill = 'Sample', palette = col.sample,
+                     x.text.angle = 0) + rremove('legend') 
+
+
+gb_jh <- ggbarplot( clone.dominant %>% left_join(phe) %>% group_by(j_gene, Sample) %>% summarise(N_sample = n_distinct(Sample)),
+                     y = 'j_gene', x = 'N_sample', fill = 'Sample', palette = col.sample,
+                     x.text.angle = 0) + rremove('legend')
+
+gb_vj <- ggbarplot( clone.dominant %>% left_join(phe) %>% mutate(vj_gene = str_c(v_gene , j_gene, sep = '-')) %>% 
+                      group_by(vj_gene, Sample) %>% summarise(N_sample = n_distinct(Sample)),
+                     y = 'vj_gene', x = 'N_sample', fill = 'Sample', palette = col.sample,
+                     x.text.angle = 0) + rremove('legend')
+
+
+gb_isotype <- ggbarplot( clone.dominant %>% left_join(phe) %>% group_by(isotype, Sample) %>% summarise(N_sample = n_distinct(Sample)),
+                    x = 'isotype', y = 'N_sample', fill = 'Sample', palette = col.sample,
+                     x.text.angle = 0) + rremove('legend')
+
+topptx(gb_vh, filename = outfile, title = 'v_gene', append = T, h = 5, w = 5)
+topptx(gb_jh, filename = outfile, title = 'j_gene', append = T, h = 5, w = 3)
+topptx(gb_vj, filename = outfile, title = 'vj_gene', append = T, h = 5, w = 7)
+topptx(gb_isotype, filename = outfile, title = 'isotype', append = T, h = 5, w = 3)
+
+```
+
+
+
+```{r Bcells lost BCR}
+# strange MZL1_pre many c3 cells lost BCR
+stat_bcr_clone = q.mb@meta.data  %>% group_by(orig.ident, celltype.B, domaintClone) %>% summarise(n_Cell = n()) %>% spread(domaintClone, n_Cell) %>% 
+  mutate(cell_pct_lostBCR = `NA`/sum(Dominant, Minor , `NA`, na.rm = T) * 100)
+
+ggbarplot(q.mb@meta.data %>% group_by(orig.ident, celltype.B, domaintClone) %>% summarise(n_Cell = n())  %>% 
+            mutate(orig.ident = factor(orig.ident, levels = order_sample)), 
+          x = 'celltype.B', y = 'n_Cell', facet.by = 'orig.ident', fill = 'domaintClone', palette = color_clone1, position = position_fill() )
+ggsave(last_plot(), file = 'q.mb.cells/barplot.BCRclone.cluster.pdf', w = 4, h = 3)
+
+```
+
+
+
+
+
+

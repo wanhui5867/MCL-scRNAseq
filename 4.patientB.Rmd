@@ -1,0 +1,1714 @@
+---
+title: "1.patientB"
+author: "hui.wan"
+date: "09/06/2023"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, warning = F, message = F)
+knitr::opts_knit$set(root.dir = '~/OneDrive - Karolinska Institutet/Documents//Project/MCL_scRNAseq//')
+```
+
+
+```{r load pkgs}
+library(Seurat)
+library(patchwork)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(DoubletFinder)
+library(scRepertoire)
+library(harmony)
+library(clustree)
+library(scPred)
+library(RColorBrewer)
+library(ggpubr)
+library(eoffice)
+library(grid)
+library(EnhancedVolcano)
+library(monocle)
+library(SeuratWrappers)
+library(rstatix)
+source(file = '_src/Rfunctions_for_scRNA.R')
+source(file = '_src/global_setting.R')
+```
+
+
+## set variables
+```{r gloable vars}
+# mydir = 'q.b.patient/rmHLA&IG/'
+mydir = 'q.b.patient/'
+
+dir.create(mydir)
+outfile = paste0(mydir, '2.plot.patientB.pptx')
+gene.lymphchip = read_lines('~/OneDrive - Karolinska Institutet//Mac/Project/MCL50_2022/1.driver/_Ref/lymphChip.gene.list')
+
+# mut.gene = read_tsv('WGS/fromMingyu/20231113/vaf.20231117.txt') %>% select(Gene, Sample = sample) %>% distinct()
+mut_driver = read_tsv('sample_mutation.xls')
+```
+
+
+## Load datasets and normalization (run in UPPMAX)
+```{r normalize in UPPMAX _src/5.1.MalignantB.normalize.R}
+q.mb <- read_rds('Matrix/04_B.patients.rds')
+
+q.mb.n <- CreateSeuratObject(counts = q.mb@assays$RNA@counts, meta.data = q.mb@meta.data)
+q.mb.n <- q.mb.n[!grepl("^HLA", rownames(q.mb.n)), ]
+q.mb.n <- q.mb.n[!grepl("^IG[HLK]", rownames(q.mb.n)), ]
+
+q.mb.n <- q.mb.n %>%
+  SCTransform( assay = "RNA", new.assay.name = "SCT", verbose = FALSE) %>%
+  RunPCA( npcs = 50, verbose = F, assay.use = "SCT") %>%
+  #RunHarmony( group.by.vars = "orig.ident" ,dims.use = 1:50)  %>%
+  RunUMAP(dims = 1:20, reduction = "pca", reduction.name = "umap") %>%
+  FindNeighbors( dims = 1:20,  reduction = "pca") %>%
+  FindClusters(resolution = 1,  graph.name = 'SCT_snn') %>%
+  identity()
+
+# Clustering with louvain (algorithm 1)
+for (res in c(0.1, 0.25,  0.5, 0.75, 1, 1.5, 2)) {
+    q.mb.n <- FindClusters(q.mb.n, graph.name = "SCT_snn", resolution = res, algorithm = 1 )
+}
+
+plot_grid(ncol = 3,
+    #DimPlot(data.filt, reduction = "umap", group.= "orig.ident") + ggtitle("UMAP raw_data"),
+    #DimPlot(data.norm, reduction = my.reduction, group.= "orig.ident") + ggtitle("UMAP "),
+    DimPlot(q.mb.n, reduction = my.reduction, label =  T, group.= "SCT_snn_res.0.25") +  ggtitle("louvain_0.25") ,
+    DimPlot(q.mb.n, reduction = my.reduction, label =  T, group.= "SCT_snn_res.0.5") +  ggtitle("louvain_0.5") ,
+    DimPlot(q.mb.n, reduction = my.reduction, label =  T, group.= "SCT_snn_res.0.75") +  ggtitle("louvain_0.75") ,
+    DimPlot(q.mb.n, reduction = my.reduction, label = T, group.= "SCT_snn_res.1") +  ggtitle("louvain_1"),
+    DimPlot(q.mb.n, reduction = my.reduction,label = T,  group.= "SCT_snn_res.1.5") +  ggtitle("louvain_1.5"),
+    DimPlot(q.mb.n, reduction = my.reduction,  group.= "SCT_snn_res.2", label = T) +  ggtitle("louvain_2")
+
+    )
+
+ggsave(last_plot(), filename = paste0(mydir,'02.dimplot.resoultionSelect.png'), w = 16, h = 10)
+
+clustree(q.mb.n@meta.data, prefix = "SCT_snn_res.")
+ggsave(last_plot(), filename = paste0(mydir,'02.dimplot.resoultionTree.png'), w = 8, h = 10)
+
+
+saveRDS(q.mb.n, paste0(mydir,'01.subset.count.norm.clust.rds'))
+```
+
+
+## read nomalized data
+```{r load data}
+
+q.mb.p <- read_rds('q.b.patient/01.subset.count.norm.clust.rds')
+# q.mb.p <- read_rds('q.b.patient/rmHLA&IG/01.subset.count.norm.clust.rds') # removed IG and HLA gens
+
+q.mb.p$Sample = NULL
+q.mb.p$Sampling_time = NULL
+q.mb.p$Tissue = NULL
+q.mb.p$Tissue_source = NULL
+q.mb.p$Treatment = NULL
+q.mb.p@meta.data = q.mb.p@meta.data %>% left_join(phe %>% select(orig.ident, Sample, Treatment, Sampling_time, Tissue, Tissue_source))
+
+rownames(q.mb.p@meta.data ) <- q.mb.p$CellBarcode
+
+table(q.mb.p$Tissue)
+```
+
+
+
+## DIM plot
+
+```{r plot}
+w = 6
+h = 6
+reduction = 'umap'
+sel.clust = "SCT_snn_res.0.5"
+
+
+
+# plot Sampling time
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Sampling_time", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('Sampling time') ) + 
+                    scale_color_manual(values = col.samtime) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Sampling_time.T.png'), w = w+2, h = h)
+
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Sampling_time", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Sampling time') ) + 
+                    scale_color_manual(values = col.samtime) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Sampling_time.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Sampling_time", repel = T, label = T, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Sampling time') ) + 
+                    scale_color_manual(values = col.samtime) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Sampling_time.L.png'), w = w, h = h)
+
+# plot sampling tissue
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Tissue", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('Tissue') ) + 
+            scale_color_manual(values = col.tissue) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.tissue.T.png'), w = w+2, h = h)
+
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Tissue", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Tissue') ) + 
+            scale_color_manual(values = col.tissue) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.tissue.F.png'), w = w, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Tissue", repel = T, label = T, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Tissue') ) + 
+            scale_color_manual(values = col.tissue) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.tissue.L.png'), w = w, h = h)
+
+
+# plot samples
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Sample", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('Sample') ) + 
+          scale_color_manual(values = col.sample) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.sample.T.png'), w = w+2, h = h)
+
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Sample", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+           scale_color_manual(values = col.sample) + 
+          labs(title = paste0('Sample') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.sample.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Sample", repel = T, label = T, label.size = 5, raster = T) + NoAxes()  +  
+          NoLegend() + 
+           scale_color_manual(values = col.sample) + 
+          labs(title = paste0('Sample') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.sample.L.png'), w = w, h = h)
+
+
+
+# plot Donor/patients
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Patient", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('Patient') ) + 
+          scale_color_manual(values = col.patient) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Patient.T.png'), w = w+2, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Patient", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('Patient') ) + 
+          scale_color_manual(values = col.patient) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Patient.F.png'), w = w, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Patient", repel = T, label = T, label.size = 6, raster = T) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('Patient') ) + 
+          scale_color_manual(values = col.patient) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Patient.L.png'), w = w, h = h)
+
+
+
+
+# plot cell type
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "celltype_inferMalig", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('Cell Type') ) + 
+          scale_color_manual(values = col.cell_major) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.celltype.T.png'), w = w+2, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "celltype_inferMalig", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('Cell Type') ) + 
+          scale_color_manual(values = col.cell_major) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.celltype.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "celltype_inferMalig", repel = T, label = T, label.size = 7, raster = T) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('Cell Type') ) + 
+          scale_color_manual(values = col.cell_major) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.celltype.L.png'), w = w, h = h)
+
+
+
+
+ # plot VDJ
+# ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "domaintClone", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+#           scale_color_manual(values = color_clone1) + 
+#           labs(title = paste0('BCR Clone') ) + 
+#           theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+#         filename =  paste0(mydir,reduction, '.VDJ.T.png'), w = w+2, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "VDJ_manu", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          scale_color_manual(values = color_tf) + 
+          labs(title = paste0('VDJ') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.VDJ.T.png'), w = w+2, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "VDJ_manu", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  NoLegend() +
+          scale_color_manual(values = color_tf) + 
+          labs(title = paste0('VDJ') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.VDJ.F.png'), w = w, h = h)
+
+# plot clusters
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= sel.clust, repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('Cluster') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.cluster.T.png'), w = w+2, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= sel.clust, repel = T, label = F, label.size = 7, raster = T) + NoAxes()  + NoLegend() + 
+          labs(title = paste0('Cluster') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.cluster.F.png'), w = w, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= sel.clust, repel = T, label = T, label.size = 7, raster = T) + NoAxes()  + NoLegend() + 
+          labs(title = paste0('Cluster') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.cluster.L.png'), w = w, h = h)
+
+
+# plot cell cycle
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Phase", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('Cell cycle') ) + 
+            scale_color_manual(values = color_cellcycle) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.phase.T.png'), w = w+2, h = h)
+
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Phase", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Cell cycle') ) + 
+            scale_color_manual(values = color_cellcycle) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.phase.F.png'), w = w, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Phase", repel = T, label = T, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Cell cycle') ) + 
+            scale_color_manual(values = color_cellcycle) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.phase.L.png'), w = w, h = h)
+
+
+
+#plot isotype
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Isotype",repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +
+          labs(title = 'Isotype from scVDJ') +
+           scale_color_manual(values = col_isotype) + 
+          theme(panel.background = element_rect(fill = 'white', colour = 'black', size = 2)),
+        filename =   paste0(mydir,reduction, '.VDJ.isotype.T.pdf'), w = w+1, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Isotype", repel = T, label = T, label.size = 7, raster = T) + NoAxes()  + NoLegend() +
+          labs(title = 'Isotype from scVDJ') + 
+           scale_color_manual(values = col_isotype) + 
+          theme(panel.background = element_rect(fill = 'white', colour = 'black', size = 2)),
+        filename =   paste0(mydir,reduction, '.VDJ.isotype.F.pdf'), w = w, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "Isotype", repel = T, label = T, label.size = 7,raster = T) + 
+          NoAxes()  + NoLegend() +
+          labs(title = 'Isotype from scVDJ') + 
+           scale_color_manual(values = col_isotype) + 
+          theme(panel.background = element_rect(fill = 'white', colour = 'black', size = 2)),
+        filename =   paste0(mydir,reduction, '.VDJ.isotype.L.pdf'), w = w, h = h)
+
+# plot igK/igL
+ggsave(FeaturePlot(q.mb.p, reduction = reduction,  features  = "igl_kl_ratio", repel = T, 
+            raster = F, label = F, label.size = 7) + NoAxes()  +  NoLegend() + 
+        scale_colour_gradientn(colours = rev(brewer.pal(n = 11, name = "RdYlBu"))) + 
+        labs(title = paste0('IGK/IGL ratio') ) + 
+        theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.IgK_L.F.png'), w = w, h = h)
+    
+ggsave(FeaturePlot(q.mb.p, reduction = reduction,  features  = "igl_kl_ratio", repel = T, 
+            raster = F, label = F, label.size = 7) + NoAxes()  +  
+        scale_colour_gradientn(colours = rev(brewer.pal(n = 11, name = "RdYlBu"))) + 
+        labs(title = paste0('IGK/IGL ratio') ) + 
+        theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.IgK_L.T.png'), w = w+1, h = h)
+    
+# plot clonalBCR
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "clonalBCR", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('Clonal BCR') ) + 
+          scale_color_manual(values = color_clone1) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0('q.all.cells/',reduction, '.clonalBCR.T.png'), w = w+2, h = h)
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "clonalBCR", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('Clonal BCR') ) + 
+          scale_color_manual(values = color_clone1) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.clonalBCR.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.mb.p, reduction = reduction, group.= "clonalBCR", repel = T, label = T, label.size = 7, raster = T) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('Clonal BCR') ) + 
+          scale_color_manual(values = color_clone1) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.clonalBCR.L.png'), w = w, h = h)
+
+
+  # plot SHM
+ggsave( FeaturePlot(q.mb.p, reduction = reduction, features  = "SHM_VH", repel = T,
+                      max.cutoff = quantile(q.mb.p$SHM_VH, na.rm = T, probs = 0.99),
+                      # cols =  c("#00AFBB", "#E7B800", "#FC4E07"),
+                      cols =  c( "#00AFBB", "#FC4E07"),
+                      label = F, label.size = 7) + NoAxes()  +
+            #scale_color_manual(values = color_clone1) +
+            labs(title = paste0('SHM') ) +
+            theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+          filename =  paste0(mydir,reduction, '.SHM.T.png'), w = w+1, h = h)
+  
+
+
+## CCND1
+my.featureplot(q.mb.p, 'CCND1', mydir = mydir)
+
+```
+
+
+### cluster - patient distribution
+```{r cluster-patient}
+gb.patietn <- ggbarplot(q.mb.p@meta.data %>% group_by(SCT_snn_res.0.5 , Patient) %>% summarise(N_cell = n()), 
+          x = 'SCT_snn_res.0.5', y = 'N_cell', fill = 'Patient', position = position_fill(), palette = col.patient)
+eoffice::topptx(gb.patietn, filename = paste0(mydir, 'plot.pptx'), append = T, width = 6, height = 3)
+
+gb.sample<- ggbarplot(q.mb.p@meta.data %>% group_by(SCT_snn_res.0.5 , Sample) %>% summarise(N_cell = n()), 
+          x = 'SCT_snn_res.0.5', y = 'N_cell', fill = 'Sample', position = position_fill(), palette = col.sample)
+
+eoffice::topptx(gb.sample, filename = paste0(mydir, 'plot.pptx'), append = T, width = 6, height = 3, title = paste0('Sample'))
+
+
+gb.tissue <- ggbarplot(q.mb.p@meta.data %>% group_by(SCT_snn_res.0.5 , Tissue) %>% summarise(N_cell = n()), 
+          x = 'SCT_snn_res.0.5', y = 'N_cell', fill = 'Tissue', position = position_fill(), palette = col.tissue)
+
+eoffice::topptx(gb.tissue, filename = paste0(mydir, 'plot.pptx'), append = T, width = 6, height = 3, title = paste0('Sample'))
+
+```
+
+
+## DEGs
+```{r DEGs set up}
+q.b.rmIG <- q.mb.p[!grepl("^IG[HLK]", rownames(q.mb.p)), ]
+
+```
+
+
+### DEGs among clusters
+```{r DEGs by clusters, fig.height=4, fig.width=3 }
+
+q.b.rmIG <- q.mb.p[!grepl("^IG[HLK]", rownames(q.mb.p)), ]
+
+#order_cluster 
+Idents(q.b.rmIG)   <- sel.clust
+
+# q.b.rmIG <- PrepSCTFindMarkers(q.t, assay = 'SCT') # Run this if the below commond raise errors
+
+markers_genes <- FindAllMarkers(q.b.rmIG, logfc.threshold = log2(1.5), test.use = "wilcox", 
+    min.pct = 0.1, min.diff.pct = 0.2, only.pos = TRUE,  random.seed = 1234, 
+    assay = "SCT") %>% 
+    group_by(cluster) %>% filter(p_val_adj <= 0.05) 
+
+write_tsv(markers_genes, paste0(mydir, 'DEGs.Cluster.xls'))
+
+top5 <- markers_genes %>% group_by(cluster) %>% top_n(-5, avg_log2FC)
+
+mat_ave_cluster <- AverageExpression(q.mb.p, return.seurat = T)@assays$SCT@data
+mat_cluster     <- mat_ave_cluster[unique(top5$gene),]
+my(mat_cluster)
+
+pdf(file = paste0(mydir, '/heatmap.markers.Cluster.top5.pdf'), h = 8, w = 4)
+myheatmap(mat_cluster)
+dev.off()
+
+
+## labels
+show.label = intersect(markers_genes$gene, gene.lymphchip)
+
+heat <- myheatmap(mat_ave_cluster[unique(markers_genes$gene), ])  # affected by cluster size
+
+pdf(file = paste0(mydir, 'heatmap.markers.Cluster.clusterColumn.pdf'), h = 8, w = 5)
+add.flag(heat, kept.labels = show.label,  repel.degree = 0.2)
+dev.off()
+
+
+
+
+
+```
+
+## DEGs by tissue
+
+```{r DEGs by tissue }
+mydir = 'q.b.patient/DEGs_between_tissue/'
+dir.create(mydir)
+
+# remove IG gene and only compared malignant cells
+q.b.rmIG <- q.mb.p[!grepl("^IG[HLK]", rownames(q.mb.p)), ]
+# q.s <- subset(q.b.rmIG, subset = celltype_inferMalig == 'Malignant' )
+
+set.seed(12)
+Idents(q.s)   <- 'Sample'
+sampled.cells <- q.s@meta.data %>% filter( celltype_inferMalig == 'Malignant' ) %>%  group_by(Sample) %>% slice_sample( n = 500) %>% pull(CellBarcode ) # downsampling
+q.s <- subset(q.b.rmIG, cells =  sampled.cells, Sample != 'MC1R' )
+
+q.s$tissue <- if_else(q.s$Tissue == 'BM', 'BM', 'SLO')
+Idents(q.s)   <- 'tissue'
+
+
+# two  clusters  ------------- 
+ident.1 = 'BM'
+ident.2 = 'SLO' 
+FC_cut = log2(1.5)
+q_cut = 0.01
+
+#q.t <- PrepSCTFindMarkers(q.t) 
+markers_genes.nB <-  FindMarkers( q.s,ident.1 = ident.1, ident.2 = ident.2 ,
+                                  min.pct = 0.1, logfc.threshold = 0)   
+write_tsv(markers_genes.nB %>% rownames_to_column('Gene'), file = paste0(mydir, 'DEGs.Tissue.downsampling500', '.xls'))
+write_tsv(markers_genes.nB %>% rownames_to_column('Gene'), file = paste0(mydir, 'DEGs.Tissue', '.xls'))
+
+
+# select FC genes to label volcano
+select.genes <- markers_genes.nB %>% 
+  filter(abs(avg_log2FC) > FC_cut, p_val_adj < q_cut) %>%
+  rownames_to_column('Gene') %>% 
+  #filter(Gene %in% gene.lymphchip | grepl('^IG', Gene)) %>% 
+  # filter(Gene %in% gene.lymphchip ) %>% 
+  pull(Gene)
+
+#  volcano plot
+pV <- myVolcano(markers_genes.nB, ident.1 = ident.1 , ident.2 = ident.2 , 
+                      FCcutoff = FC_cut, pCutoff = q_cut)
+ggsave(pV , filename =  paste0( mydir, 'Volcano.Tissue.png'), w = 7, h = 5)
+
+
+## DEGs by pesudo bulk RNAseq
+Idents(q.b.rmIG)   <- 'Sample'
+
+mat_ave_cluster <- AverageExpression(q.b.rmIG, return.seurat = T)@assays$SCT@data
+
+degs.tissue.fc <- mat_ave_cluster %>% as.data.frame() %>% rownames_to_column('Gene') %>%  gather(Sample, exp, -Gene) %>% 
+  left_join(phe ) %>% 
+  filter(Tissue %in% c('BM', 'LN')) %>% 
+  group_by(Gene, Tissue) %>% summarise(avg_exp = mean(exp)) %>% 
+  spread(Tissue, avg_exp) %>% 
+  filter(BM >0, LN > 0)
+
+degs.tissue <- mat_ave_cluster %>% as.data.frame() %>% rownames_to_column('Gene') %>%  gather(Sample, exp, -Gene) %>% 
+  left_join(phe ) %>% 
+  filter(Tissue %in% c('BM', 'LN'), Gene %in% degs.tissue.fc$Gene ) %>% 
+  group_by(Gene) %>% 
+  wilcox_test(exp ~ Tissue)
+
+
+```
+
+
+## DEG by patient 
+
+```{r DEGs by patient }
+# remove IG gene and only compared malignant cells
+q.b.rmIG <- q.mb.p[!grepl("^IG[HLK]", rownames(q.mb.p)), ]
+q.s <- subset(q.b.rmIG, subset = celltype_inferMalig == 'Malignant' )
+
+Idents(q.s)   <- 'Patient'
+levels(q.s)  <- order.patient[1:11]
+
+
+markers_genes <- FindAllMarkers(q.s, logfc.threshold = log2(1.5), test.use = "wilcox",  
+    min.pct = 0.1, min.diff.pct = 0.2, only.pos = TRUE,  random.seed = 1234, 
+    assay = "SCT") %>%  
+    group_by(cluster) %>% filter(p_val_adj <= 0.05) 
+
+write_tsv(markers_genes, paste0(mydir, 'DEGs.Patients.xls'))
+
+
+
+top5 <- markers_genes %>% group_by(cluster) %>% top_n(-5, avg_log2FC)
+#DoHeatmap(q.all.nb, top5$gene, size=3 )
+
+mat_ave_cluster <- AverageExpression(q.s, return.seurat = T)@assays$SCT@data
+mat_cluster     <- mat_ave_cluster[top5$gene,]
+
+myheatmap(mat_cluster)
+heat <- myheatmap(mat_ave_cluster[unique(markers_genes$gene), ])  
+
+
+
+
+## labels
+show.label = intersect(markers_genes$gene, gene.lymphchip)
+
+pdf(file = paste0( mydir, 'heatmap.markers.Patient.clusterColumn.pdf'), h = 9, w = 6)
+add.flag(heat, kept.labels = show.label,  repel.degree = 0.2)
+dev.off()
+
+
+# according to sample order to order genes
+heat.order = markers_genes %>%   arrange(match(cluster, order.patient[1:11]), -avg_log2FC)
+heat <- myheatmap(mat_ave_cluster[unique(heat.order$gene), order.patient[1:11] ], cluster_rows = F, cluster_cols = F)  
+#heat.clust <- myheatmap(mat_ave_cluster[unique(markers_genes$gene), ], cluster_rows = T, cluster_cols = T)  #cluster row and column
+
+pdf(file =  paste0( mydir, 'heatmap.markers.Patient.orderColumnRow.pdf'), h = 9, w = 6)
+add.flag(heat, kept.labels = show.label,  repel.degree = 0.2)
+dev.off()
+
+
+```
+
+
+```{r find the tissue specific genes}
+library(DESeq2)
+library(Matrix.utils)
+# mat_ave_cluster <- SumExpression(q.s, return.seurat = T)@assays$RNA@counts
+
+aggr_counts <- aggregate.Matrix(t(q.s@assays$SCT@counts), groupings = q.s$Sample, fun = "sum") 
+
+dds <- DESeqDataSetFromMatrix(countData = t(aggr_counts),
+                              colData = phe  %>% filter(Cancer_type == 'MCL') %>% select(Sample, Tissue) %>% arrange(match(Sample, rownames(aggr_counts))) %>%    mutate(Tissue = if_else(Tissue == 'BM', 'BM', 'non-BM') ) %>% column_to_rownames('Sample'),
+                              design = ~ Tissue)
+dds
+
+# QC
+rld <- rlog(dds, blind=TRUE)
+DESeq2::plotPCA(rld, ntop = 500, intgroup = "Tissue")
+
+
+# run
+dds <- DESeq(dds)
+
+# Generate results object
+res_tbl <- results(dds)%>%
+  data.frame() %>%
+  rownames_to_column(var = "gene") %>%
+  as_tibble() %>%
+  arrange(padj)
+
+write_tsv(res_tbl, 'q.b.patient/DEG.BM-vs-nonBM.sample.tsv')
+
+# filter gene
+df.deg.tissue = res_tbl %>% filter(abs(log2FoldChange) > log2(1.5), padj < 0.05) %>% 
+  filter(gene %in% markers_genes$gene) %>% 
+  arrange(log2FoldChange)
+
+
+# Gene enrichment
+genelist = df.deg.tissue %>% arrange(log2FoldChange) 
+genelist.order = df.deg.tissue$log2FoldChange
+names(genelist.order) = as.character(df.deg.tissue$gene)
+genelist.order = sort(genelist.order, decreasing = T)
+
+deg.hallmark.gsea <-  GSEA(geneList = genelist.order, TERM2GENE = hm_gs , pvalueCutoff = 0.05)  %>% summary() # p.adjust < 0.05
+deg.kegg.gsea <- GSEA(geneList = genelist.order, TERM2GENE = kegg_gs , pvalueCutoff = 0.05) %>% summary() # p.adjust < 0.05
+deg.stromal.gsea <- GSEA(geneList = genelist.order, TERM2GENE = stromal_gs , pvalueCutoff = 0.05) %>% summary() # p.adjust < 0.05
+deg.reactome.gsea <- GSEA(geneList = genelist.order, TERM2GENE =  react_gs, pvalueCutoff = 0.05) %>% summary() # p.adjust < 0.05
+
+# save table
+gsea.all = deg.hallmark.gsea %>% mutate(GeneSet = 'Hallmark') %>% mutate(ID = str_remove(ID, 'HALLMARK_'))  %>% 
+            bind_rows(deg.kegg.gsea %>% mutate(GeneSet = 'KEGG') %>% mutate(ID = str_remove(ID, 'KEGG_'))) %>% 
+             bind_rows(deg.reactome.gsea %>% mutate(GeneSet = 'Reactome') %>% mutate(ID = str_remove(ID, 'REACTOME_'))) %>% 
+            mutate(ID = str_to_title(ID)) %>% 
+            bind_rows(deg.stromal.gsea %>% mutate(GeneSet = 'Stromal'))
+
+write_tsv(  gsea.all, file = paste0(mydir, 'BM-vs-nonBM.GSEA.xls'))
+
+
+# remove the tissue related genes
+genes = setdiff(markers_genes$gene,df.deg.tissue$gene)
+heat <- myheatmap(mat_ave_cluster[genes,], cluster_rows = T, cluster_cols = T,
+                                    annotation_col = phe %>% select(Sample, Tissue, Donor, Sampling_time) %>% column_to_rownames('Sample') %>% as.data.frame(),
+                  annotation_colors = list(Tissue = col.tissue, Donor = col.patient[1:11], Sampling_time = col.samtime))  # cluster column
+#heat.clust <- myheatmap(mat_ave_cluster[unique(markers_genes$gene), ], cluster_rows = T, cluster_cols = T)  #cluster row and column
+
+pdf(file =  paste0( mydir, 'DEGs_among_samples/heatmap.markers.Sample.rmTissueGenes.pdf'), h = 9, w = 6)
+add.flag(heat, kept.labels = show.label,  repel.degree = 0.2)
+dev.off()
+
+
+# only markable tissue genes
+labels.tissueGene = intersect(intersect(markers_genes$gene,df.deg.tissue$gene), gene.lymphchip)
+heat <- myheatmap(mat_ave_cluster[unique(markers_genes$gene),], cluster_rows = T, cluster_cols = T,
+                                    annotation_col = phe %>% select(Sample, Tissue, Donor, Sampling_time) %>% column_to_rownames('Sample') %>% as.data.frame(),
+                  annotation_colors = list(Tissue = col.tissue, Donor = col.patient[1:11], Sampling_time = col.samtime))  # cluster column
+#heat.clust <- myheatmap(mat_ave_cluster[unique(markers_genes$gene), ], cluster_rows = T, cluster_cols = T)  #cluster row and column
+
+pdf(file =  paste0( mydir, 'DEGs_among_samples/heatmap.markers.Sample.TissueGenes.pdf'), h = 9, w = 6)
+add.flag(heat, kept.labels = labels.tissueGene,  repel.degree = 0.2)
+dev.off()
+
+```
+
+
+
+
+## DEGs by samples
+
+```{r DEGs by sample }
+# remove IG gene and only compared malignant cells
+q.b.rmIG <- q.mb.p[!grepl("^IG[HLK]", rownames(q.mb.p)), ]
+q.s <- subset(q.b.rmIG, subset = celltype_inferMalig == 'Malignant' )
+
+Idents(q.s)   <- 'Sample'
+levels(q.s)  <- order.sample[1:20]
+
+
+markers_genes <- FindAllMarkers(q.s, logfc.threshold = log2(1.5), test.use = "wilcox",  
+    min.pct = 0.1, min.diff.pct = 0.2, only.pos = TRUE,  
+    max.cells.per.ident = 500, random.seed = 1234,   # down-sampling
+    assay = "SCT") %>%  
+    group_by(cluster) %>% filter(p_val_adj <= 0.05) 
+
+write_tsv(markers_genes, paste0(mydir, 'DEGs_among_samples/DEGs.Samples.xls'))
+markers_genes <- read_tsv(paste0(mydir, 'DEGs_among_samples/DEGs.Samples.xls'))
+  
+  
+top5 <- markers_genes %>% group_by(cluster) %>% top_n(-5, avg_log2FC)
+#DoHeatmap(q.all.nb, top5$gene, size=3 )
+
+mat_ave_cluster <- AverageExpression(q.s, return.seurat = T)@assays$SCT@data
+mat_cluster     <- mat_ave_cluster[top5$gene,]
+
+myheatmap(mat_cluster)
+heat <- myheatmap(mat_ave_cluster[unique(markers_genes$gene), ], 
+                  annotation_col = phe %>% select(Sample, Tissue, Donor, Sampling_time) %>% column_to_rownames('Sample') %>% as.data.frame(),
+                  annotation_colors = list(Tissue = col.tissue, Donor = col.patient[1:11], Sampling_time = col.samtime))  
+
+
+
+## labels
+show.label = intersect(markers_genes$gene, gene.lymphchip) # lymph chip 
+
+pdf(file = paste0( mydir, 'DEGs_among_samples/heatmap.markers.Sample.clusterColumn.pdf'), h = 9, w = 6)
+add.flag(heat, kept.labels = show.label,  repel.degree = 0.2)
+dev.off()
+
+
+# according to sample order to order genes
+heat.order = markers_genes %>%   arrange(match(cluster, order.sample), -avg_log2FC)
+heat <- myheatmap(mat_ave_cluster[unique(heat.order$gene),  ], cluster_rows = T, cluster_cols = T,
+                                    annotation_col = phe %>% select(Sample, Tissue, Donor, Sampling_time) %>% column_to_rownames('Sample') %>% as.data.frame(),
+                  annotation_colors = list(Tissue = col.tissue, Donor = col.patient[1:11], Sampling_time = col.samtime))  # cluster column
+#heat.clust <- myheatmap(mat_ave_cluster[unique(markers_genes$gene), ], cluster_rows = T, cluster_cols = T)  #cluster row and column
+
+pdf(file =  paste0( mydir, 'DEGs_among_samples/heatmap.markers.Sample.orderRow.pdf'), h = 9, w = 6)
+add.flag(heat, kept.labels = show.label,  repel.degree = 0.2)
+dev.off()
+
+
+# according to sample order to order genes and samples
+heat.order = markers_genes %>%   dplyr::arrange(match(cluster, order.sample), -avg_log2FC)
+heat <- myheatmap(mat_ave_cluster[unique(heat.order$gene), order.sample[1:20] ], cluster_rows = F, cluster_cols = F,
+                                    annotation_col = phe %>% select(Sample, Tissue, Donor, Sampling_time) %>% column_to_rownames('Sample') %>% as.data.frame(),
+                  annotation_colors = list(Tissue = col.tissue, Donor = col.patient[1:11], Sampling_time = col.samtime))  # cluster column
+
+pdf(file =  paste0( mydir, 'DEGs_among_samples/heatmap.markers.Sample.orderColumnRow.pdf'), h = 9, w = 6)
+add.flag(heat, kept.labels = show.label,  repel.degree = 0.2)
+dev.off()
+
+
+```
+
+- Enrichment of DEGs
+```{r enricher }
+mydir = "./q.b.patient/DEGs_among_samples/"
+
+df.degs =  read_tsv(paste0(mydir, "DEGs.normBvsmalianantB.xls")) %>% 
+  select(Gene = gene, Sample = cluster) %>% 
+    filter(!grepl('^IG[HKL]',Gene))
+
+# Up ---- 
+# Stromal gene signature - largeB cell lymphoma -------- 
+meta.wp <- compareCluster( Gene ~ Sample , data = df.degs,  fun="enricher", TERM2GENE = stromal_gs )
+pd_wp <- dotplot(filter(meta.wp, qvalue<0.0001),showCategory=20)
+write_tsv(summary(meta.wp), paste0(mydir, 'DEG.enricher.stromal.all.xls'))
+# ggsave(pd_wp, filename = paste0('q.samples/NMF/Table.Top30Genes.kegg.all.pdf'), w =12, h = 12)
+
+
+# Hallmark enrichment ----
+meta.hallmark <- compareCluster(Gene ~ Sample , data = df.degs,    fun="enricher", TERM2GENE = hm_gs ) # p.adjust < 0.05
+write_tsv(summary(meta.hallmark), paste0(mydir, 'DEG.enricher.gshallmark.all.xls'))
+
+# KEGG enrichement-----
+meta.kegg <- compareCluster( Gene ~ Sample , data = df.degs,   fun="enricher", TERM2GENE = kegg_gs )
+write_tsv(summary(meta.kegg), paste0(mydir, 'DEG.enricher.kegg.all.xls'))
+
+
+# Reactome enrichement
+meta.reactome <- compareCluster( Gene ~ Sample , data = df.degs,   fun="enricher", TERM2GENE = react_gs )
+write_tsv(summary(meta.reactome), paste0(mydir, 'DEG.enricher.Reactome.all.xls'))
+
+
+# select top6 pathway for each program by q value
+meta.pathway = data.frame(summary(meta.hallmark) %>% mutate(Method = 'Hallmark') ) %>%
+  bind_rows(data.frame(summary(meta.kegg) %>% mutate(Method = 'KEGG') ) ) %>% 
+  bind_rows(data.frame(summary(meta.wp) %>% mutate(Method = 'Stromal') ) )   %>% 
+  bind_rows(data.frame(summary(meta.reactome) %>% mutate(Method = 'Reactome') ) )   %>% 
+  arrange(Cluster, Method, pvalue) %>% 
+  group_by(Cluster,Method) %>% mutate(Rank = row_number()) %>% 
+  ungroup() %>% mutate(Pathway_Rank = str_c(Method, Rank,sep = '_')) %>% 
+  # filter(Rank < 6) %>% 
+  select(Cluster, Sample,  Pathway = ID, Pathway_Rank, p.adjust, Rank) %>% 
+  mutate(Pathway = str_replace(Pathway, 'HALLMARK_', '[HM] '),
+         Pathway = str_replace(Pathway, 'KEGG_', '[KEGG] '),
+         Pathway = str_replace(Pathway, 'REACTOME_', '[REACTOME] ')) 
+
+write_tsv(meta.pathway, paste0(mydir, 'DEG.enricher.allDatasets.xls'))
+
+
+meta.pathway_f  = meta.pathway  %>% filter(Rank < 6) 
+
+write_tsv( meta.pathway_f, paste0(mydir,  'DEG.enricher.all.top5.long.xls'))
+write_tsv( meta.pathway_f %>%  select(Cluster, Sample, Pathway , Pathway_Rank) %>% spread(Pathway_Rank, Pathway), 
+           paste0(mydir,  'DEG.enricher.all.top5.wide.xls'))
+
+
+# plot- heatmap 
+df_ph <- meta.pathway %>% filter(Pathway %in% meta.pathway_f$Pathway) %>% 
+  transmute(Sample,  Pathway, log10_p.adjst = -log10(p.adjust+0.0001)) %>% 
+  spread(Sample, log10_p.adjst, fill = 0)
+
+pdf(paste0(mydir,  'DEG.enricher.top5.pdf'), w = 20, h = 20)
+pheatmap(df_ph  %>% column_to_rownames('Pathway'))
+dev.off()
+
+# order samples
+heat.order = meta.pathway_f  %>% arrange(match(Sample, intersect(order.sample, colnames(df_ph))), p.adjust)
+mat_ph = df_ph %>%  column_to_rownames('Pathway') 
+ph <- pheatmap(mat_ph[unique(heat.order$Pathway), intersect(order.sample, colnames(df_ph))], scale = 'none',
+# ph <- pheatmap(df.top.gsea , scale = 'none', show_rownames = T,  
+                cluster_rows = F,  cluster_cols = F,
+                 # cutree_rows = 6, 
+                 # clustering_method = "ward.D",
+          annotation_col = phe %>% select(Sample, Tissue, Donor, Sampling_time) %>% column_to_rownames('Sample') %>% as.data.frame(),
+                  annotation_colors = list(Tissue = col.tissue, Donor = col.patient[1:11], Sampling_time = col.samtime))
+
+pdf(file = paste0( mydir, 'DEG.enricher.top5.order.pdf'), h = 20, w = 20)
+ph
+dev.off()
+```
+
+
+
+
+
+## non-malignant B cells
+```{r DEGs between  non-malignant cells }
+
+
+# more than clusters ---------
+normB.clusters <- c(16,17,21)
+q.b.rmIG <- q.mb.p[!grepl("^IG[HLK]", rownames(q.mb.p)), ]
+q.nb <- subset(q.b.rmIG, subset = SCT_snn_res.0.5 %in% normB.clusters )
+
+
+markers.B.sub <- c('CD19', 'MS4A1', 'IGHM', 'IGHD', 'IGHG1', 'IGHA1', 'CD27','TCL1A', 'CD38', 'CD72','CD80', 'SDC1','XBP1', 'BCL6' , 'MEF2C', 'LTB' )
+markers.B.reg <- c('CD19', 'MS4A1', 'IGHM', 'IGHD',  'CD72', 'CCR7', 'RFX5', 'CD27', 'IL4R', 'CXCR5', 'TBX21', 'PDCD1', 'FCRL4', 'MKI67')
+markers.B.reg <- c('CD19', 'MS4A1', 'IGHM', 'IGHD',  'CD72', 'CCR7', 'CD1D', 'CD21', 'CD24', 'CD38', 'CD40')
+
+
+DotPlot(q.mb.p, features =markers.B.sub,  idents = c(16,17,21))
+eoffice::topptx(last_plot(), filename = paste0(mydir, 'plot.pptx'), append = T, width = 8, height = 2, title = 'non-malignant B clusters')
+
+DotPlot(q.mb.p, features =markers.B.sub,  idents = c(16,17,21)) + coord_flip()
+DotPlot(q.mb.p, features =markers.B.reg,  idents = c(16,17,21)) + coord_flip()
+
+eoffice::topptx(last_plot(), filename = paste0(mydir, 'plot.pptx'), append = T, width = 4, height = 5, title = 'non-malignant B clusters')
+
+
+
+markers_genes <- FindAllMarkers(q.nb, logfc.threshold = log2(1.5), test.use = "wilcox",  
+    min.pct = 0.1, min.diff.pct = 0.2, only.pos = TRUE,  
+    max.cells.per.ident = 500, random.seed = 1234,   # down-sampling
+    assay = "SCT") %>%  
+    group_by(cluster) %>% filter(p_val_adj <= 0.05) 
+
+write_tsv(markers_genes, paste0(mydir, 'DEGs.normB.cluster.xls'))
+
+
+# two  clusters  ------------- 
+Idents(q.mb.p)   <- sel.clust
+ident.1 = 16
+ident.2 = 21 
+FC_cut = log2(1.5)
+q_cut = 0.01
+
+#q.t <- PrepSCTFindMarkers(q.t) 
+markers_genes.nB <-  FindMarkers( q.mb.p[!grepl("^IG[HLK]", rownames(q.mb.p)), ],
+                                  ident.1 = ident.1, ident.2 = ident.2 , min.pct = 0.1, logfc.threshold = 0)   
+write_tsv(markers_genes.nB %>% rownames_to_column('Gene'), file = paste0(mydir, 'DEGs.Cluster.non-malignantB', '.xls'))
+
+
+# select FC genes to label volcano
+select.genes <- markers_genes.nB %>% 
+  filter(abs(avg_log2FC) > FC_cut, p_val_adj < q_cut) %>%
+  rownames_to_column('Gene') %>% 
+  #filter(Gene %in% gene.lymphchip | grepl('^IG', Gene)) %>% 
+  # filter(Gene %in% gene.lymphchip ) %>% 
+  pull(Gene)
+
+#  volcano plot
+pV <- myVolcano(markers_genes.nB, ident.1 = ident.1 , ident.2 = ident.2 , 
+                      FCcutoff = FC_cut, pCutoff = q_cut)
+ggsave(pV , filename =  paste0( mydir, 'Volcano.TCluster.non-malignantB.png'), w = 7, h = 5)
+
+```
+
+
+## set up norm B controls 
+
+```{r seperate normB in indidvidual }
+mydir = "q.b.patient/normB_individual/"
+q.mb.p@meta.data <- q.mb.p@meta.data  %>% mutate(B_patient = if_else(celltype_inferMalig == 'B' & Cancer_type == 'MCL', str_c(Donor, '_B'), Sample))
+table(q.mb.p@meta.data$B_patient)
+rownames(q.mb.p@meta.data) = colnames(q.mb.p@assays$RNA)
+Idents(q.mb.p) <- 'B_patient'
+
+# DEGs
+ident.T = c("MC2D", "MC3D", "MC3P", "MC3Rb", "MC3Rl", "MC201R1", "MC201R2", "MC202D", "MC202R", "MC203D", "MC203R", "MC205D", "MC205R", "MC206D", "MC206R", "MC207R")
+ident.N = c("MC2_B", "MC3_B","MC3_B", "MC3_B", "MC3_B", "MC201_B","MC201_B", "MC202_B","MC202_B", "MC203_B","MC203_B", "MC205_B","MC205_B", "MC206_B","MC206_B","MC207_B")
+DEG.B = map2(.x = ident.T, .y = ident.N, function(x,y) FindMarkers(q.mb.p, ident.1 = x, ident.2 = y , min.pct = 0.1, logfc.threshold = 0) %>% mutate(ident.1 = x , ident.2 = y) %>% rownames_to_column('Gene') ) 
+save(DEG.B, file = 'q.mb.p.patient/normB_individual/DEG.B.Robj')
+
+```
+
+
+
+
+```{r merge normB  }
+mydir = "q.b.patient/normB_all/"
+q.mb.p@meta.data <- q.mb.p@meta.data  %>% mutate(B_patient = if_else(celltype_inferMalig == 'B' & Cancer_type == 'MCL', 'normB', Sample))
+table(q.mb.p@meta.data$B_patient)
+rownames(q.mb.p@meta.data) = colnames(q.mb.p@assays$RNA)
+Idents(q.mb.p) <- 'B_patient'
+
+ident.T = phe$Sample[phe$Cancer_type == 'MCL']
+DEG.B = map(.x = ident.T,  function(x) FindMarkers(q.mb.p, ident.1 = x, ident.2 = 'normB' , min.pct = 0.1, logfc.threshold = 0) %>% mutate(ident.1 = x , ident.2 =  'normB') %>% rownames_to_column('Gene') ) 
+save(DEG.B, file = 'q.mb.p.patient/DEG.B.Robj')
+load('q.b.patient/normB_all/DEG.B.Robj')
+
+# exclude IG genes
+q.mb.p <- q.mb.p[!grepl("^IG[HLK]", rownames(q.mb.p)), ]
+DEG.B = map(.x = ident.T,  function(x) FindMarkers(q.mb.p, ident.1 = x, ident.2 = 'normB' , min.pct = 0.1, logfc.threshold = 0) %>% mutate(ident.1 = x , ident.2 =  'normB') %>% rownames_to_column('Gene') ) 
+save(DEG.B, file = 'q.b.patient/normB_all/DEG.B.rmIg.Robj')
+load('q.b.patient/normB_all/DEG.B.rmIg.Robj')
+```
+
+
+
+## mutation with expression
+
+```{r mutations }
+Idents(q.mb.p)   <- 'B_patient'
+mat_ave_sample <- AverageExpression(q.mb.p, return.seurat = T)@assays$SCT@data
+
+# any highly expressed genes was consistent with mutated genes in the sample
+gene.mut.exp =  markers_genes %>% select(Sample = cluster, Gene = gene) %>% inner_join( mut.gene)   # 3 genes while not so good
+
+genexp.mut = mat_ave_sample %>% as.data.frame() %>% 
+  rownames_to_column('Gene') %>% filter(Gene %in% c( 'ATM', 'CCND1', 'TP53' )) %>% 
+   gather(Sample, expression, -Gene) %>% 
+   left_join(mut_driver) 
+
+ genexp.mut %>% filter(Sample == 'normB')
+
+# ATM expression between ATM_mut vs ATM+unmut
+gb.ATM <- ggboxplot(genexp.mut  %>% filter(Gene == 'ATM', !is.na(ATM)), x = 'ATM', y = 'expression', add = 'jitter', ylab =  'Average expression') +
+  stat_compare_means() + geom_hline(yintercept = genexp.mut$expression[genexp.mut$Gene == 'ATM' & genexp.mut$Sample == 'normB'] , lty = 2)
+
+
+gb.TP53 <- ggboxplot(genexp.mut  %>% filter(Gene == 'TP53', !is.na(TP53)), x = 'TP53', y = 'expression', add = 'jitter', ylab =  'Average expression') +
+  stat_compare_means() + geom_hline(yintercept = genexp.mut$expression[genexp.mut$Gene == 'TP53' & genexp.mut$Sample == 'normB'] , lty = 2)
+
+
+gb.ccnd1 <- ggboxplot(genexp.mut  %>% filter(Gene == 'CCND1', !is.na(IGH_CCND1)), x = 'IGH_CCND1', y = 'expression', add = 'jitter', ylab =  'Average expression') +
+  stat_compare_means() + geom_hline(yintercept = genexp.mut$expression[genexp.mut$Gene == 'CCND1' & genexp.mut$Sample == 'normB'] , lty = 2)
+
+
+
+topptx(gb.ccnd1 + gb.ATM + gb.TP53, filename = outfile, width =  6, h = 2.5, append = T)
+
+topptx(gb.ccnd1 + gb.ATM + gb.TP53, filename = outfile, width =  9, h = 3, append = T)
+```
+
+
+
+```{r line plot of mutated gene in pairs}
+
+# lineplot of paired D/R samples
+ggline(genexp.mut %>% left_join(phe) %>% filter(Donor %in% c('MC3', 'MC203', 'MC205', 'MC202', 'MC206'), Sampling_time != 'Progress', Sample != 'MC3Rl') %>% 
+         mutate( Sampling_time = factor(Sampling_time, levels = c('Primary', 'Relapse'))),
+       x = 'Sampling_time', y = 'expression', ylab = 'Average expression',
+       facet.by = 'Gene',  scale = 'free', nrow = 1,
+       group = 'Donor',   color = 'Donor', palette = col.patient) +
+  # rremove('legend') + 
+  stat_compare_means(paired = T, label = '..p..') + 
+  theme_classic() +
+  # stat_compare_means(paired = T, label = '..p..') + 
+  scale_y_continuous(expand=expand_scale(mult=c(0.05, 0.1)))
+topptx(last_plot(), filename = outfile, width =  6, h = 2.5, append = T)
+
+```
+
+
+
+
+
+## check DEGs between normB and maglignantB 
+```{r DEGs between normB and malignant B}
+# ident.1 = "MC2D"
+# ident.2 = "MC2_B"
+# markers_genes.MC2 <-  FindMarkers(q.mb.p, ident.1 = ident.1, ident.2 = ident.2 , min.pct = 0.1, logfc.threshold = 0) %>% mutate(ident.1 = ident.1 , ident.2 = ident.2)
+
+FC_cut = log2(1.5)
+q_cut = 0.01
+
+DEG.B.df = do.call('rbind', DEG.B) %>% filter(p_val_adj <= q_cut, abs(avg_log2FC) >= FC_cut) %>% arrange(ident.1, -avg_log2FC)
+write_tsv(DEG.B.df, paste0(mydir, 'DEGs.normBvsmalianantB.xls'))
+DEG.B.df = read_tsv(paste0(mydir, 'DEGs.normBvsmalianantB.xls'))
+
+# stat DEGs
+DEG.B.stat = do.call('rbind', DEG.B) %>% select(Gene, Sample = ident.1, avg_log2FC) %>% filter(Gene %in% unique(DEG.B.df$Gene)) %>% 
+  left_join(phe %>% select(Sample, Patient, Sampling_time)) %>% 
+  mutate(Change = if_else(avg_log2FC > FC_cut, 'Up', if_else(avg_log2FC < -FC_cut, 'Down', 'NC'))) %>% 
+  filter(Change != 'NC') %>% 
+  group_by(Gene, Change) %>% summarise(N_sample = n_distinct(Sample), N_patient = n_distinct(Patient), N_primary = sum(Sampling_time == 'Primary'), N_relapse = sum(Sampling_time == 'Relapse')) %>% 
+  gather(Content, value, -Gene, -Change) %>% unite('Content', Content:Change, sep = '_') %>% 
+  # filter(!grepl('^IG[HKL]',Gene)) %>% 
+  spread(Content, value, 0) %>% 
+  mutate(is.lymphgene = if_else(Gene %in% gene.lymphchip | grepl('^CD\\d+', Gene) | Gene== 'MAS41', 1, 0)) 
+write_tsv(DEG.B.stat, paste0(mydir, '/DEGs.normBvsmalianantB.stat.xls'))
+
+
+DEG.B.stat.sample = do.call('rbind', DEG.B)  %>% select(Gene, Sample = ident.1, avg_log2FC) %>% filter(Gene %in% unique(DEG.B.df$Gene)) %>% 
+  mutate(avg_log2FC = if_else(avg_log2FC > FC_cut, 1, if_else(avg_log2FC < -FC_cut, -1, 0))) %>% 
+  group_by(Sample, avg_log2FC) %>% summarise(N_gene = n_distinct(Gene)) %>% spread(avg_log2FC, N_gene)
+write_tsv(DEG.B.stat.sample, paste0(mydir, '/DEGs.normBvsmalianantB.statSamples.xls'))
+
+# barplot -- by sample
+pb_sam <- DEG.B.stat  %>% arrange(-N_sample_Up, N_sample_Down) %>% filter(is.lymphgene == 1, N_sample_Down + N_sample_Up > 1)
+
+ggbarplot(pb_sam %>% transmute(Gene, Down = -N_sample_Down, Up = N_sample_Up ) %>% gather(Change, N_sample, -Gene),
+          y = 'N_sample', x = 'Gene', fill = 'Change', palette = structure(c('red', 'blue' ),names = c('Up', 'Down')),
+          label = pb_sam$Gene, lab.pos = 'out', lab.vjust = 0.5, lab.hjust = 0) + 
+  coord_flip() + rremove('ylab') + rremove('legend') + rremove('y.axis') + rremove('y.text')
+topptx(last_plot(), filename = outfile, width =  4, h = 10, append = T)
+
+
+# barplot -- by patient
+pb_sam <- DEG.B.stat  %>% arrange(-N_patient_Up, N_patient_Down) %>% filter(is.lymphgene == 1, N_patientDown + N_patient_Up > 1)
+
+ggbarplot(pb_sam %>% transmute(Gene, Down = -N_patient_Down, Up = N_patient_Up ) %>% gather(Change, N_patient, -Gene),
+          y = 'N_patient', x = 'Gene', fill = 'Change', palette = structure(c('red', 'blue' ),names = c('Up', 'Down')),
+          label = pb_sam$Gene, lab.pos = 'out', lab.vjust = 0.5, lab.hjust = 0) + 
+  coord_flip() + rremove('ylab') + rremove('legend') + rremove('y.axis') + rremove('y.text')
+topptx(last_plot(), filename = outfile, width =  4, h = 9, append = T)
+
+
+
+# heatmap 
+DEG.B.mat = do.call('rbind', DEG.B)  %>% select(Gene, Sample = ident.1, avg_log2FC) %>% filter(Gene %in% unique(DEG.B.df$Gene)) %>% 
+  # mutate(avg_log2FC = if_else(avg_log2FC > FC_cut, 1, if_else(avg_log2FC < -FC_cut, -1, 0))) %>% 
+  spread(Sample, avg_log2FC, fill = 0) %>% 
+  column_to_rownames('Gene')
+
+heat <- pheatmap(DEG.B.mat[DEG.B.stat$Gene,], scale = 'none', show_rownames = T,  
+                 # cluster_rows = F,  
+                 # cutree_rows = 6, 
+                 # clustering_method = "ward.D",
+          annotation_col = phe %>% select(Sample, Tissue, Donor, Sampling_time) %>% column_to_rownames('Sample') %>% as.data.frame(),
+                  annotation_colors = list(Tissue = col.tissue, Donor = col.patient[1:11], Sampling_time = col.samtime),
+                 color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(15),
+                   breaks = c(seq(-1, 1, length.out= 15)))
+
+show.label = intersect(DEG.B.df$Gene, gene.lymphchip)
+
+# gene2cluster = data.frame( clustesr = heat$kmeans$cluster, Gene = names( heat$kmeans$cluster))
+
+pdf(file = paste0( mydir, 'heatmap.markers.Patient.noRownames.pdf'), h = 9, w = 6)
+heat
+# add.flag(heat, kept.labels = show.label,  repel.degree = 0.2)
+dev.off()
+
+pdf(file = paste0( mydir, 'heatmap.markers.Patient.foldchange.pdf'), h = 9, w = 6)
+
+add.flag(heat, kept.labels = show.label,  repel.degree = 0.2)
+dev.off()
+
+
+# heatmap - order by samples
+heat.order = DEG.B.df %>%   arrange(match(ident.1, intersect(order.sample, colnames(DEG.B.mat))), -avg_log2FC)
+heat <- pheatmap(DEG.B.mat[heat.order$Gene, intersect(order.sample, colnames(DEG.B.mat))], scale = 'none',
+                 show_rownames = F,   # NEED modify 
+                 cluster_rows = F,   cluster_cols = F, 
+                 # cutree_rows = 6, 
+                 # clustering_method = "ward.D",
+          annotation_col = phe %>% select(Sample, Tissue, Donor, Sampling_time) %>% column_to_rownames('Sample') %>% as.data.frame(),
+                  annotation_colors = list(Tissue = col.tissue, Donor = col.patient[1:11], Sampling_time = col.samtime),
+                 color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(15),
+                   breaks = c(seq(-1, 1, length.out= 15)))
+
+pdf(file =  paste0( mydir, 'heatmap.markers.Sample.orderColumnRow.pdf'), h = 9, w = 5)
+heat
+dev.off()
+
+pdf(file =  paste0( mydir, 'heatmap.markers.Sample.orderColumnRow.label.pdf'), h = 9, w = 6)
+add.flag(heat, kept.labels = show.label,  repel.degree = 0.2)
+dev.off()
+
+```
+
+## GSEA analysis
+
+
+```{r GSEA enrichment}
+
+DEG.B.all = do.call('rbind', DEG.B) 
+DEG.B.all %>% filter(Gene == 'CCND1') 
+
+run_gsea <- function(df, annotations){
+  genelist = df %>% arrange(avg_log2FC) 
+  genelist.order = genelist$avg_log2FC
+  names(genelist.order) = as.character(genelist$Gene)
+  genelist.order = sort(genelist.order, decreasing = T)
+  df.gesa = GSEA(geneList = genelist.order, TERM2GENE = annotations , pvalueCutoff = 1) # p.adjust < 0.05
+  return(summary(df.gesa) )
+
+}
+
+deg.hallmark.gsea <- map_df( .x = unique(DEG.B.all$ident.1), .f =  function(x) run_gsea(DEG.B.all %>% filter(ident.1 == x),  annotations = hm_gs ) %>% mutate(Sample = x))
+deg.kegg.gsea <- map_df( .x =  unique(DEG.B.all$ident.1), .f =  function(x) run_gsea(DEG.B.all %>% filter(ident.1 == x),  annotations = kegg_gs ) %>% mutate(Sample = x)) 
+deg.stromal.gsea <- map_df(.x =unique(DEG.B.all$ident.1), .f =  function(x) run_gsea(DEG.B.all %>% filter(ident.1 == x),  annotations = stromal_gs) %>% mutate(Sample = x))  
+deg.reactome.gsea <- map_df(.x = unique(DEG.B.all$ident.1), .f =  function(x) run_gsea(DEG.B.all %>% filter(ident.1 == x),  annotations = react_gs) %>% mutate(Sample = x))  
+
+# save table
+gsea.all = deg.hallmark.gsea %>% mutate(GeneSet = 'Hallmark') %>% mutate(ID = str_remove(ID, 'HALLMARK_'))  %>% 
+            bind_rows(deg.kegg.gsea %>% mutate(GeneSet = 'KEGG') %>% mutate(ID = str_remove(ID, 'KEGG_'))) %>% 
+             bind_rows(deg.reactome.gsea %>% mutate(GeneSet = 'Reactome') %>% mutate(ID = str_remove(ID, 'REACTOME_'))) %>% 
+            mutate(ID = str_to_title(ID)) %>% 
+            bind_rows(deg.stromal.gsea %>% mutate(GeneSet = 'Stromal'))
+
+write_tsv(  gsea.all, file = paste0(mydir, 'Sample-vs-normB.GSEA.xls'))
+gsea.all = read_tsv(paste0(mydir,  'Sample-vs-normB.GSEA.xls' ))
+
+# find common pathways
+stat.gsea.sample = gsea.all %>% 
+  # deg.hallmark.gsea   %>% bind_rows(deg.reactome.gsea, deg.stromal.gsea, deg.kegg.gsea)  %>% 
+  filter(p.adjust < 0.05) %>% 
+  left_join(phe ) %>% 
+  mutate(Change = if_else(NES > 0, 'Up', 'Down')) %>%  ungroup() %>% 
+  group_by(ID,Change, GeneSet) %>% summarise(N_sample = n_distinct(Sample), N_patient = n_distinct(Donor)) %>% arrange(-N_sample)  
+    # strange in vs all malignant B: >50% sample, most of them are down-regulated, only one is up-regulated and is SARS-CoV infection
+    # more reasonable in vs individal malignant B: Up in NF-kB, Down in IFN-a
+write_tsv(  stat.gsea.sample, file = paste0(mydir, 'Sample-vs-normB.GSEA.stat.xls'))
+
+
+# plot top30 pathway from each sample
+my.gs = deg.hallmark.gsea %>%  mutate(ID = str_to_title (str_remove(ID, 'HALLMARK_') ) ) 
+my.gs = deg.reactome.gsea %>%  mutate(ID = str_to_title (str_remove(ID, 'REACTOME_') ) ) 
+my.gs = gsea.all %>% filter(GeneSet == 'Reactome') 
+
+
+top.gsea = my.gs %>%  filter(p.adjust < 0.05, NES > 0) %>% group_by(Sample) %>% arrange(-NES) %>% top_n(n=30,NES) 
+df.top.gsea = my.gs %>% filter(ID %in% top.gsea$ID) %>% select(Sample, NES, ID) %>% spread(Sample, NES,fill =  0) %>% column_to_rownames('ID')
+
+heat.order = top.gsea %>%  arrange(match(Sample, intersect(order.sample, colnames(df.top.gsea))), -NES)
+ph <- pheatmap(df.top.gsea[unique(heat.order$ID), intersect(order.sample, colnames(df.top.gsea))], scale = 'none',
+# ph <- pheatmap(df.top.gsea , scale = 'none', show_rownames = T,  
+                cluster_rows = F,  cluster_cols = F,
+                 # cutree_rows = 6, 
+                 # clustering_method = "ward.D",
+          annotation_col = phe %>% select(Sample, Tissue, Donor, Sampling_time) %>% column_to_rownames('Sample') %>% as.data.frame(),
+                  annotation_colors = list(Tissue = col.tissue, Donor = col.patient[1:11], Sampling_time = col.samtime),
+                 color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(15),
+                   breaks = c(seq(-1, 1, length.out= 15)))
+
+pdf(file = paste0( mydir, 'heatmap.gsea.hallmark.pdf'), h = 6, w = 7)
+ph
+dev.off()
+```
+
+
+## Enrichment of DEGs
+```{r enricher }
+mydir = "q.b.patient/normB_all/"
+mydir = "q.b.patient/normB_individual/"
+
+df.degs =  read_tsv(paste0(mydir, "DEGs.normBvsmalianantB.xls")) %>% 
+  select(Gene, Sample = ident.1, avg_log2FC) %>% filter(Gene %in% unique(DEG.B.df$Gene)) %>% 
+  left_join(phe %>% select(Sample, Patient, Sampling_time)) %>% 
+  mutate(Change = if_else(avg_log2FC > FC_cut, 'Up', if_else(avg_log2FC < -FC_cut, 'Down', 'NC')))  %>% filter(Change != 'NC') %>% 
+    filter(!grepl('^IG[HKL]',Gene))
+
+# Up ---- 
+# Stromal gene signature - largeB cell lymphoma -------- 
+meta.wp <- compareCluster( Gene ~ Sample + Change, data = df.degs,  fun="enricher", TERM2GENE = stromal_gs )
+pd_wp <- dotplot(filter(meta.wp, qvalue<0.0001),showCategory=20)
+write_tsv(summary(meta.wp), paste0(mydir, 'DEG.enricher.stromal.all.xls'))
+# ggsave(pd_wp, filename = paste0('q.samples/NMF/Table.Top30Genes.kegg.all.pdf'), w =12, h = 12)
+
+
+# Hallmark enrichment ----
+meta.hallmark <- compareCluster(Gene ~ Sample + Change, data = df.degs,    fun="enricher", TERM2GENE = hm_gs ) # p.adjust < 0.05
+write_tsv(summary(meta.hallmark), paste0(mydir, 'DEG.enricher.gshallmark.all.xls'))
+
+# KEGG enrichement-----
+meta.kegg <- compareCluster( Gene ~ Sample + Change, data = df.degs,   fun="enricher", TERM2GENE = kegg_gs )
+write_tsv(summary(meta.kegg), paste0(mydir, 'DEG.enricher.kegg.all.xls'))
+
+
+# Reactome enrichement
+meta.reactome <- compareCluster( Gene ~ Sample + Change, data = df.degs,   fun="enricher", TERM2GENE = react_gs )
+write_tsv(summary(meta.reactome), paste0(mydir, 'DEG.enricher.Reactome.all.xls'))
+
+
+# select top6 pathway for each program by q value
+meta.pathway = data.frame(summary(meta.hallmark) %>% mutate(Method = 'Hallmark') ) %>%
+  bind_rows(data.frame(summary(meta.kegg) %>% mutate(Method = 'KEGG') ) ) %>% 
+  bind_rows(data.frame(summary(meta.wp) %>% mutate(Method = 'Stromal') ) )   %>% 
+  bind_rows(data.frame(summary(meta.reactome) %>% mutate(Method = 'Reactome') ) )   %>% 
+  arrange(Cluster, Method, pvalue) %>% 
+  group_by(Cluster,Method) %>% mutate(Rank = row_number()) %>% 
+  ungroup() %>% mutate(Pathway_Rank = str_c(Method, Rank,sep = '_')) %>% 
+  # filter(Rank < 6) %>% 
+  select(Cluster, Sample, Change, Pathway = ID, Pathway_Rank, p.adjust, Rank) %>% 
+  mutate(Pathway = str_replace(Pathway, 'HALLMARK_', '[HM] '),
+         Pathway = str_replace(Pathway, 'KEGG_', '[KEGG] '),
+         Pathway = str_replace(Pathway, 'REACTOME_', '[REACTOME] ')) 
+
+write_tsv(meta.pathway, paste0(mydir, 'DEG.enricher.allDatasets.xls'))
+
+
+meta.pathway_f  = meta.pathway  %>% filter(Rank < 6) 
+
+write_tsv( meta.pathway_f, paste0(mydir,  'DEG.enricher.all.top5.long.xls'))
+write_tsv( meta.pathway_f %>%  select(Cluster, Sample, Change, Pathway , Pathway_Rank) %>% spread(Pathway_Rank, Pathway), 
+           paste0(mydir,  'DEG.enricher.all.top5.wide.xls'))
+
+
+# plot- heatmap -UP
+df_ph <- meta.pathway %>% filter(Pathway %in% meta.pathway_f$Pathway) %>% 
+  transmute(Sample, Change, Pathway, log10_p.adjst = -log10(p.adjust+0.0001)) %>% 
+  spread(Sample, log10_p.adjst, fill = 0)
+
+pdf(paste0(mydir,  'DEG.enricher.Up.top5.pdf'), w = 20, h = 20)
+pheatmap(df_ph %>% filter(Change == 'Up') %>% column_to_rownames('Pathway') %>% select(-Change))
+dev.off()
+
+# order samples
+heat.order = meta.pathway_f %>%  filter(Change == 'Up') %>% arrange(match(Sample, intersect(order.sample, colnames(df_ph))), p.adjust)
+mat_ph = df_ph %>% filter(Change == 'Up') %>% column_to_rownames('Pathway') %>% select(-Change)
+ph <- pheatmap(mat_ph[unique(heat.order$Pathway), intersect(order.sample, colnames(df_ph))], scale = 'none',
+# ph <- pheatmap(df.top.gsea , scale = 'none', show_rownames = T,  
+                cluster_rows = F,  cluster_cols = F,
+                 # cutree_rows = 6, 
+                 # clustering_method = "ward.D",
+          annotation_col = phe %>% select(Sample, Tissue, Donor, Sampling_time) %>% column_to_rownames('Sample') %>% as.data.frame(),
+                  annotation_colors = list(Tissue = col.tissue, Donor = col.patient[1:11], Sampling_time = col.samtime))
+
+pdf(file = paste0( mydir, 'DEG.enricher.Up.top5.order.pdf'), h = 20, w = 20)
+ph
+dev.off()
+```
+
+
+
+##  private gene
+
+```{r gene only in one sample/patient}
+# only DEG in one sample
+genes.onesample = DEG.B.stat %>% filter(N_sample_Down + N_sample_Up <= 1) %>% pull(Gene) # 623 (exp from all patients' B cells); 759 (exp from all cell norm); 638 (exp from B cell norm)
+
+
+# only DEG in one patient
+genes.onepatient = DEG.B.stat %>% filter(N_patient_Down + N_patient_Up <= 1) %>% pull(Gene) # 718 (exp from all patients' B cells); 7843 (exp from all cell norm); 736 (exp from B cell norm)
+
+```
+
+
+
+
+
+- gene common in primary
+```{r DEGs in primary}
+
+df.degs =  read_tsv(paste0(mydir, "DEGs.normBvsmalianantB.xls")) %>% 
+  select(Gene, Sample = ident.1, avg_log2FC) %>% filter(Gene %in% unique(DEG.B.df$Gene)) %>% 
+  left_join(phe %>% select(Sample, Patient, Sampling_time)) %>% 
+  mutate(Change = if_else(avg_log2FC > FC_cut, 'Up', if_else(avg_log2FC < -FC_cut, 'Down', 'NC')))  %>% filter(Change != 'NC') %>% 
+    filter(!grepl('^IG[HKL]',Gene))
+
+samples.primary= phe %>% filter(Sampling_time == 'Primary') %>% pull(Sample)
+
+DEGs.D = df.degs %>% filter(Sample %in% samples.primary) %>% group_by(Gene, Change) %>% 
+  summarise(N_samples = n_distinct(Sample)) %>% 
+  spread(Change , N_samples, 0 ) %>% 
+  filter( Up == 0 | Down ==0) %>% 
+  filter(Up > length(select.samples)/2  | Down > length(select.ssamples.primaryamples)/2)
+
+write_tsv(DEGs.D, paste0(mydir, 'DEGs.primary.xls'))
+
+
+sum(DEGs.D$Up > 0)
+sum(DEGs.D$Down > 0)
+
+```
+
+
+
+-gene common in relapse (first)
+
+```{r}
+samples.replase = c("MC1R",     "MC3Rb" ,  "MC4R1" ,   "MC201R1", "MC202R" , "MC203R" , "MC205R" , "MC206R" , "MC207R" ) # merge all control
+samples.replase = c(  "MC3Rb" ,    "MC201R1", "MC202R" , "MC203R" , "MC205R" , "MC206R" , "MC207R" ) # compare to individual normal B
+
+DEGs.R = df.degs %>% filter(Sample %in% samples.replase) %>% group_by(Gene, Change) %>% 
+  summarise(N_samples = n_distinct(Sample)) %>% 
+  spread(Change , N_samples, 0 ) %>% 
+  filter( Up == 0 | Down ==0) %>% 
+  filter(Up > length(select.samples)/2  | Down > length(samples.replase)/2)
+
+write_tsv(DEGs.R, paste0(mydir, 'DEGs.relapse.xls'))
+
+sum(DEGs.R$Up > 0)
+sum(DEGs.R$Down > 0)
+
+
+```
+
+
+- scatter plot
+```{r scatter of DEGs}
+df.degs.sum = df.degs %>%  filter(Sample %in% c(samples.primary, samples.replase)) %>% 
+  group_by(Gene, Sampling_time) %>% summarise(FC = mean(avg_log2FC), N_sample = n_distinct(Sample)) %>%
+  ungroup() %>% group_by(Gene) %>% mutate(pct_sample = sum(N_sample)/length(c(samples.primary,samples.replase))) %>% 
+  select(-N_sample) %>% 
+  mutate(MT50 = if_else(Gene %in% intersect(DEGs.D$Gene, DEGs.R$Gene), 'Both', if_else(Gene %in% setdiff(DEGs.D$Gene, DEGs.R$Gene), 'Primary', if_else(Gene %in% setdiff(DEGs.R$Gene , DEGs.D$Gene), 'Relapse', 'None')))) %>% 
+  mutate(Label = if_else(MT50 != 'None', Gene,'' )) %>% 
+  spread(Sampling_time, FC, fill = 0) 
+
+ggplot(df.degs.sum) +
+  geom_point(aes(x = Primary, y = Relapse, size = pct_sample, color = MT50)) +
+  geom_text_repel(aes(x = Primary, y = Relapse, label = Label, color = MT50), label.size = 0, fill = "white") +
+  scale_color_manual(values = structure(c('red', 'blue', 'yellow', 'grey'), names = c('Both', 'Primary', 'Relapse', 'None'))) +
+  theme_bw()
+
+```
+
+
+
+```{r scatter of DEGs,  axis is N_sample}
+df.degs.sum = df.degs %>%  filter(Sample %in% c(samples.primary, samples.replase)) %>% 
+  group_by(Gene, Sampling_time) %>% summarise(N_sample = n_distinct(Sample), FC = mean(avg_log2FC)) %>%
+  ungroup() %>% group_by(Gene) %>% mutate(pct_sample = sum(N_sample)/length(c(samples.primary,samples.replase))) %>% 
+  mutate(Change = if_else( FC > 0 , 'Up', 'Down')) %>% 
+  select(-N_sample) %>% 
+  # mutate(MT50 = if_else(pct_sample, 'Both', if_else(Gene %in% setdiff(DEGs.D$Gene, DEGs.R$Gene), 'Primary', if_else(Gene %in% setdiff(DEGs.R$Gene , DEGs.D$Gene), 'Relapse', 'None')))) %>%
+  # mutate(Label = if_else(MT50 != 'None', Gene,'' )) %>%
+  spread(Sampling_time, N_sample, fill = 0) 
+
+ggplot(df.degs.sum) +
+  geom_jitter(aes(x = Primary, y = Relapse, color = Change)) +
+  # geom_text_repel(aes(x = Primary, y = Relapse, label = Label, color = MT50), label.size = 0, fill = "white") +
+  scale_color_manual(values = structure(c('red', 'blue'), names = c('Up', 'Down'))) +
+  theme_bw()
+
+```
+
+
+- common DEGS  primary relapse 
+```{r}
+samples.pairs.D = c('MC3D', 'MC202D' , 'MC203D', 'MC205D', 'MC206D')
+samples.pairs.R = c('MC3Rb', 'MC202R' , 'MC203R', 'MC205R', 'MC206R')
+
+
+DEGs.pairs = df.degs %>% filter(Sample %in% c(samples.pairs.D, samples.pairs.R)) %>% left_join(phe %>% select(Sample, Donor, Sampling_time)) %>% 
+  group_by(Gene, Change, Donor) %>% 
+  summarise(Group = str_c(unique(Sampling_time), collapse = ';')) %>% 
+  ungroup() %>% group_by(Gene, Change, Group) %>% 
+  summarise(N_patient = n_distinct(Donor)) %>% 
+  spread(Change , N_patient, 0 ) %>%
+  filter( Up == 0 | Down ==0) %>% 
+  filter(Up > 2  | Down > 2) %>% 
+  arrange(Group, -Up, -Down)
+
+write_tsv(DEGs.pairs, paste0(mydir, 'DEGs.pairedDR.xls'))
+
+
+```
+
+
+```{r select gene}
+selected.genes = c('CCND1', 'BCL2','CARD11', 'MEF2B', 'PDCD4', 
+                   'CD70',  'DUSP2', 'PDE4D') # the second lines are not so obvious
+ggsave( FeaturePlot(q.mb.p, features = c( selected.genes), ncol = 4, raster = T) & NoLegend(), 
+        filename =  paste0(paste0(mydir, 'FeaturePlot.DEGs.png')), w = 12, h = 6)
+
+
+```
+
+
+
+### check mutated genes
+```{r mutated gene}
+mutated.genes = c('ATM', 'SMARCA4','CARD11', 'MEF2B', 'TP53', 'NOTCH1',  'CD70',  'DOT1L') 
+ggsave( FeaturePlot(q.mb.p, features = c( mutated.genes), ncol = 4, raster = T) & NoLegend(), 
+        filename =  paste0(paste0(mydir, 'FeaturePlot.mutatedGenes.png')), w = 12, h = 6)
+
+
+```
+
+
+
+
+
+### check MHC loss
+```{r}
+# 
+# q.mb.p$B_patient <- str_c(q.mb.p$Sample, q.mb.p$celltype_inferMalig,  sep = '_')
+# Idents(q.mb.p) <- 'B_patient'
+
+marker.mhc2 <- c( "HLA-DRA", "HLA-DRB1" , "HLA-DRB5", "HLA-DQA1", "HLA-DQB1",  "HLA-DQA2", "HLA-DQB2", "HLA-DOB"  ,"HLA-DMB", "HLA-DMA",  "HLA-DOA", "HLA-DPA1", "HLA-DPB1", "CIITA" )
+marker.mhc1 <- c( "HLA-A",  "HLA-B",  "HLA-C" , "HLA-E", "HLA-G" ,"HLA-F" , 'B2M', 'TAP1' )
+marker.recept <- c('CD274', 'PDCD1LG2', 'CD80', "CD86") # PDL1-CD274: PDL2-PDCD1LG2
+
+ggsave( FeaturePlot(q.mb.p, features = c( marker.recept), ncol = 4, raster = T) & NoLegend(), 
+        filename =  paste0(paste0(mydir, 'FeaturePlot.PDLgenes.png')), w = 12, h = 3)
+
+# cell expression
+DoHeatmap(q.mb.p, features = c(marker.mhc1, marker.mhc2,marker.recept), group.by = 'B_patient')  & NoLegend() # tumor B + normal B
+ggsave( last_plot() , file = paste0(mydir, 'Heatmap.MHCgenes.tumorANDnormalB.pdf'), w = 12, h = 6)
+
+
+# random select 50 cells from each sample
+rs_cells = lapply(unique(q.mb.p$B_patient), function(x) sample(q.mb.p$CellBarcode[q.mb.p$B_patient == x], 50, replace = T)) %>% unlist() %>% unique()
+DoHeatmap(q.mb.p, cells = rs_cells, features = c(marker.mhc1, marker.mhc2), group.by = 'B_patient')  & NoLegend() # tumor B + normal B
+ggsave( last_plot() , file = paste0(mydir, 'Heatmap.MHCgenes.tumorANDnormalB.random50cells.pdf'), w = 12, h = 6)
+
+
+# average expression (not good to present)
+avgexp <- AverageExpression(q.mb.p, features = c(marker.mhc1, marker.mhc2), return.q.mb.prat = T)@assays$SCT@data # tumor B + normal B
+myheatmap(avgexp, cluster_row = F, cluster_col = F) 
+
+avgexp <- AverageExpression(q.mb.p.s, features = c(marker.mhc1, marker.mhc2), return.q.mb.prat = T)@assays$SCT@data  # only tumor B
+myheatmap(avgexp, cluster_row = F)  
+
+
+#  Dotplot (percent + expression)
+DotPlot(q.mb.p, features = c(marker.mhc1, marker.mhc2, marker.recept)) + coord_flip() + theme(axis.text.x = element_text(angle = 90))
+ggsave( last_plot() , filename =  paste0(paste0(mydir, '/DotPlot.MHCgenesCD58.png')), w = 12, h = 6)
+
+DotPlot(q.mb.p.s, features = c(marker.mhc1, marker.mhc2)) + coord_flip()
+
+# Feature plot
+ggsave( FeaturePlot(q.mb.p, features = c(marker.mhc1, marker.mhc2), ncol = 4, raster = T) & NoLegend(), 
+        filename =  paste0(paste0(mydir, 'FeaturePlot.MHCgenes.png')), w = 12, h = 14)
+
+
+FeaturePlot(q.mb.p, features = c(marker.recept), ncol = 4, raster = T) & NoLegend() #CD58 low expression in tumor
+```
+
+
+
+- calculate gsva score for each cells
+```{r MHC score}
+gs.MHC <- list(MHCI = c( "HLA-A",  "HLA-B",  "HLA-C" , "HLA-E", "HLA-G" ,"HLA-F" ),
+               MHCII =  c( "HLA-DRA", "HLA-DRB1" , "HLA-DRB5", "HLA-DQA1", "HLA-DQB1",  "HLA-DQA2", "HLA-DQB2", "HLA-DOB"  ,"HLA-DMB", "HLA-DMA",  "HLA-DOA", "HLA-DPA1", "HLA-DPB1")
+            )
+
+# MHC score by AddModuleScore
+q.mb.p <- AddModuleScore(q.mb.p, features =gs.MHC ,name= c("MHCI_score", "MHCII_score"))
+MHC1.score <- VlnPlot(q.mb.p, features = "MHCI_score1", pt.size = 0,  split.by= 'celltype_inferMalig', group.by = 'Sample', cols = col.cell_major) 
+MHC2.score <- VlnPlot(q.mb.p, features = "MHCII_score2", pt.size = 0,  split.by= 'celltype_inferMalig', group.by = 'Sample', cols = col.cell_major)
+
+topptx(MHC1.score/MHC2.score, filename = paste0(mydir, '/MHCscore.pptx'), width =  10, h = 6)
+
+
+ggviolin(q.mb.p@meta.data %>% select(MHCI_score1, MHCII_score2,B_patient, celltype_inferMalig, Patient, Donor), 
+                      y = "MHCII_score2", x = 'B_patient', fill = 'celltype_inferMalig', add = 'median', add.params = list(shape = 19)) 
+
+
+#vln plot by ggplot
+
+MHC1.score <- ggplot(q.mb.p@meta.data %>% select(MHCI_score1, MHCII_score2,B_patient, celltype_inferMalig, Patient, Donor)) +
+  geom_violin(aes( y = MHCI_score1, x = B_patient, fill = celltype_inferMalig)) + 
+  stat_summary(aes( y = MHCI_score1, x = B_patient), fun.y = median, geom='point', size = 5, colour = "black", shape = 95) +
+  facet_grid(~ Donor, space = 'free', scales = 'free_x') +
+  scale_fill_manual(values = col.cell_major) +
+  theme_bw() + RotatedAxis() 
+
+
+
+MHC2.score <- ggplot(q.mb.p@meta.data %>% select(MHCI_score1, MHCII_score2,B_patient, celltype_inferMalig, Patient, Donor)) +
+  geom_violin(aes( y = MHCII_score2, x = B_patient, fill = celltype_inferMalig)) + 
+  stat_summary(aes( y = MHCII_score2, x = B_patient), fun.y = median, geom='point', size = 5, colour = "black", shape = 95) +
+  facet_grid(~ Donor, space = 'free', scales = 'free_x') +
+  scale_fill_manual(values = col.cell_major) +
+  theme_bw() + RotatedAxis() 
+
+topptx(MHC1.score/MHC2.score, filename =  paste0(mydir,'/MHCscore.pptx'), width =  10, h = 6)
+
+```
+
+
+
+### check PDL1 expression
+whether tumor express PDL1 PDL2 to supress T cells
+```{r}
+
+marker.recept <- c('CD274', 'PDCD1LG2', 'CD58') # PDL1-CD274: PDL2-PDCD1LG2
+
+# cell expression
+DoHeatmap(q.mb.p, features = c(marker.recept), group.by = 'B_patient')  & NoLegend() # tumor B + normal B
+ggsave( last_plot() , file = paste0(mydir, 'Heatmap.MHCgenes.tumorANDnormalB.pdf'), w = 12, h = 6)
+
+
+DoHeatmap(q.mb.p, features = c(marker.mhc1, marker.mhc2), group.by = 'B_patient')  & NoLegend() # only tumor B
+ggsave( last_plot() , file = paste0(mydir,'Heatmap.MHCgenes.pdf'), w = 12, h = 6) 
+
+rs_cells = lapply(unique(q.mb.p$B_patient), function(x) sample(q.mb.p$CellBarcode[q.mb.p$B_patient == x], 50, replace = T)) %>% unlist() %>% unique()
+DoHeatmap(q.mb.p, cells = rs_cells, features = c(marker.mhc1, marker.mhc2), group.by = 'B_patient')  & NoLegend() # tumor B + normal B
+ggsave( last_plot() , file = paste0(mydir, 'Heatmap.MHCgenes.tumorANDnormalB.pdf'), w = 12, h = 6)
+
+
+# average expression (not good to present)
+avgexp <- AverageExpression(q.mb.p, features = c(marker.mhc1, marker.mhc2), return.q.mb.prat = T)@assays$SCT@data # tumor B + normal B
+myheatmap(avgexp, cluster_row = F, cluster_col = F) 
+
+avgexp <- AverageExpression(q.mb.p.s, features = c(marker.mhc1, marker.mhc2), return.q.mb.prat = T)@assays$SCT@data  # only tumor B
+myheatmap(avgexp, cluster_row = F)  
+
+
+#  Dotplot (percent + expression)
+DotPlot(q.mb.p, features = c(marker.mhc1, marker.mhc2, marker.recept)) + coord_flip() + theme(axis.text.x = element_text(angle = 90))
+ggsave( last_plot() , 
+        filename =  paste0(mydir, 'DotPlot.MHCgenesCD58.png'), w = 12, h = 6)
+
+DotPlot(q.mb.p.s, features = c(marker.mhc1, marker.mhc2)) + coord_flip()
+
+# Feature plot
+ggsave( FeaturePlot(q.mb.p, features = c(marker.recept), ncol = 3, raster = T) & NoLegend(), #CD58 low expression in tumor
+        filename =  paste0(mydir, 'FeaturePlot.PDL1.png'), w = 12, h = 3) 
+```
+
+The dotplot and featureplot showed that MCL cells did not express PDL1 to supress T cells
+
+```{r CD20}
+VlnPlot(q.mb.p, features = c('MS4A1'), ncol = 1, pt.size = 0, raster = T) & NoLegend()
+
+pv.cd20 <- my.Vlnplot(q.mb.p, gene =  'MS4A1', x = 'B_patient',  color =  col.sample )
+eoffice::topptx(pv.cd20, filename = paste0(mydir, 'plot.pptx'), append = T, width = 6, height = 3, title = paste0('CD20'))
+
+```
+
+
+# check checkpoints
+```{r checkpoints }
+gene.ckp.B <- c('CD70',  'CD80', 'CD86',  'CD40', 'CD47', 'ICAM1','CD274') 
+VlnPlot(q.mb.p, features = gene.ckp.B, ncol = 1, pt.size = 0, raster = T) & NoLegend()
+
+DotPlot( q.mb.p, features = gene.ckp.B, assay = 'SCT')
+
+# may need to plot heatmap of FC (malignant / non-malignant B)
+
+```
+
+
+# Check CCND1 
+```{r CCND1}
+VlnPlot(q.mb.p, features = c('CCND1'), ncol = 1, pt.size = 0, raster = T) & NoLegend()
+
+pv.ccnd1 <- my.Vlnplot(q.mb.p, gene =  'CCND1', x = 'B_patient',  color =  col.sample )
+eoffice::topptx(pv.ccnd1, filename = paste0(mydir, 'plot.pptx'), append = T, width = 6, height = 3, title = paste0('CD20'))
+
+```
+
+
+## calculate the gene signature of normal GC
+```{r GC signature by addmodule score (NOT USED  )}
+# calculate gene signature score
+gc.sig.raw = readxl::read_excel('_ref/GCsignature.genelist.jem_20200483_tables2.xlsx')
+gc.sig.list = gc.sig.raw %>% gather(GC, Gene) %>% filter(!is.na(Gene)) %>% group_by(GC) %>% group_map(~c(.$Gene))
+names(gc.sig.list) = names(gc.sig.raw)
+
+q.mb.p <- AddModuleScore(q.mb.p, features = gc.sig.list,name = names(gc.sig.raw), assay = 'SCT')
+
+
+# define B clusters + samples
+q.mb.p@meta.data <- q.mb.p@meta.data  %>% mutate(B_cluster = if_else(celltype_inferMalig == 'B' & SCT_snn_res.0.5 %in% c(16, 17,21), str_c('normB_C',SCT_snn_res.0.5) , Sample))
+table(q.mb.p$B_cluster)
+
+gc.sig.mat = q.mb.p@meta.data %>% select(B_cluster, contains('UP'))
+names(gc.sig.mat) = str_replace(str_remove(names(gc.sig.mat)  , '\\.UP\\d+'), '\\.', '-')
+
+gc.sig.cluster = gc.sig.mat %>% gather(GC, score, -B_cluster) %>% 
+  group_by(B_cluster, GC)  %>% summarise(score = mean(score)) %>% 
+  spread(B_cluster, score) %>% column_to_rownames('GC')
+
+pheatmap(gc.sig.cluster)
+
+```
+
+The module score cannot be used here, becuase the moudle score just could be compared among cells not across modules, so the result showed that all cells are highly expressed in PBL. THus, try to clacluster the avg exprssion of each cluster of each gene signature 
+
+
+```{r GC signature by avg expression}
+gc.sig.raw = readxl::read_excel('_ref/GCsignature.genelist.jem_20200483_tables2.xlsx')
+gc.sig.df = gc.sig.raw %>% gather(GC, Gene) %>% filter(!is.na(Gene))
+
+# define B clusters + samples
+q.mb.p@meta.data <- q.mb.p@meta.data  %>% mutate(B_cluster = if_else(celltype_inferMalig == 'B' & SCT_snn_res.0.5 %in% c(16, 17,21), str_c('normB_C',SCT_snn_res.0.5) , Sample))
+table(q.mb.p$B_cluster)
+Idents(q.mb.p) <- 'B_cluster'
+
+mat_ave_cluster <- AverageExpression(q.mb.p, return.seurat = T)@assays$SCT@data
+
+df_ave_cluster <- as.data.frame(mat_ave_cluster) %>% rownames_to_column('Gene') %>% gather(B_cluster, avg_exp, -Gene) %>%  
+   right_join(gc.sig.df) %>% 
+    group_by(B_cluster, GC)  %>% summarise(avg_exp = mean(avg_exp)) %>% 
+  filter(!is.na(B_cluster), !is.na(GC)) %>% 
+  spread(B_cluster, avg_exp) %>% column_to_rownames('GC')
+
+
+gc.sig.cluster.up = df_ave_cluster[grepl('UP', rownames(df_ave_cluster)), ]
+pheatmap(gc.sig.cluster.up, filename = 'q.b.patient/GC.signature.up.pdf', w = 6, h = 4) 
+
+gc.sig.cluster.dwn = df_ave_cluster[grepl('DWN', rownames(df_ave_cluster)), ]
+pheatmap(gc.sig.cluster.dwn, filename = 'q.b.patient/GC.signature.down.pdf', w = 6, h = 4) 
+
+```
+
+
+## inferCNV
+
+## infercnv self-plot
+
+
+```{r heatmap setting}
+
+library(pheatmap)
+
+# infercnv object ---
+infercnv_obj = readRDS('infercnv/output_hBvsmB/run.final.infercnv_obj')
+
+
+# gene order ----
+gene.order = infercnv_obj@gene_order %>% rownames_to_column('Gene')
+write_tsv(gene.order, 'infercnv/output_hBvsmB/geneorder.txt')
+
+# cell order ---
+library(TreeTools)
+trees <- phytools::read.newick(paste0('infercnv/output_hBvsmB/infercnv.observations_dendrogram.txt'))
+cell.order.default = unlist(TipLabels(trees))
+cell.order.default.df = data.frame(CellBarcode = cell.order.default)  %>%
+        left_join( q.mb.p@meta.data %>% select(B_patient, CellBarcode) ) %>%
+        group_by(B_patient) %>% mutate(Cell_order_inferCNV = row_number())
+
+cell.order = q.mb.p@meta.data %>% 
+  select(Sample,  CellBarcode, B_patient) %>% 
+  left_join(cell.order.default.df) %>% 
+  mutate(Cell_type = B_patient) %>% 
+  arrange(desc(Cell_type), Sample,  Cell_order_inferCNV) %>% 
+  # arrange( Cluster, Cell_order_inferCNV) %>% 
+  mutate(cellorder = row_number()) %>% 
+  left_join(phe %>% select(Sample, Donor))
+  
+  
+# heatmap --- 
+# obs data = normB + tumorB
+obs_data = t(infercnv_obj@expr.data)[cell.order$CellBarcode, ]
+
+# ref data - nonB
+nonB.cell.order = data.frame(CellBarcode = colnames(infercnv_obj@expr.data)[unlist(infercnv_obj@reference_grouped_cell_indices)]) %>% 
+    mutate(Donor = str_remove_all(CellBarcode, '_.*'),
+           Tissue = str_remove_all(str_remove_all(CellBarcode, '_[ATCG].*'), '.*_')) %>%
+  left_join(phe %>% select(Donor, Tissue, Sample)) %>% arrange(Sample) %>% 
+  filter(grepl('NC', Sample) ) %>% 
+    # mutate(Sample = str_remove_all(CellBarcode, '_.*')) %>% arrange(Sample) %>% 
+  mutate(Cell_type = 'Non-malignant')
+ref_data = t(infercnv_obj@expr.data)[nonB.cell.order$CellBarcode, ]
+
+# all data = ref  + obs
+all.cell.order = cell.order %>% bind_rows(nonB.cell.order) %>% mutate(B_patient = if_else(is.na(B_patient), Sample, B_patient))
+all.cell.data = base::rbind(obs_data,ref_data)
+
+# setting colors
+ph.colors <- c('#00008B','#24249B','#4848AB','#6D6DBC','#9191CC','#B6B6DD','#DADAEE','#FFFFFF',
+                     '#EEDADA','#DDB6B6','#CC9191','#BC6D6D','#AB4848','#9B2424','#8B0000')
+chr.colors <- structure(rep(c('grey20', 'grey80'), 11)  , names = str_c('chr', 1:22))  
+malignant.colors <- structure(c("#E41A1C", "grey50"), names = c('Malignant', 'Non-malignant'))
+
+```
+
+
+
+```{r heatmap of infercnv}
+
+# obs+ref heatmap with legend
+png(paste0('q.b.patient/infercnv.allcells.png'), w = 20, h = 15, units = "in", res = 600)
+pheatmap(all.cell.data, 
+         scale = 'none', cluster_cols = F, cluster_rows = F, show_rownames = F, show_colnames = F,
+         color = ph.colors,  breaks = c(seq(0.85, 1.15, length.out= 15)),
+         annotation_row = all.cell.order %>% select(Donor, B_patient, Cell_type, CellBarcode) %>% 
+           column_to_rownames('CellBarcode' ) %>%  as.data.frame(),
+         annotation_col = gene.order %>% select(chr, Gene) %>% column_to_rownames('Gene' ) %>%  as.data.frame() ,
+         annotation_colors  = list(Donor = col.patient, 
+                                   B_patient = structure(c(col.sample, 'grey'), names = c(names(col.sample), 'normB')), 
+                                   Cell_type = malignant.colors, chr = chr.colors) ,
+         legend = T, annotation_legend  = T
+         )
+
+dev.off()
+
+
+# ref heatmap with legend
+png(paste0('q.b.patient/infercnv.refcells.addSampleAnnot.png'), w = 20, h = 5, units = "in", res = 600)
+pheatmap(ref_data, 
+         scale = 'none', cluster_cols = F, cluster_rows = F, show_rownames = F, show_colnames = F,
+         color = ph.colors,  breaks = c(seq(0.85, 1.15, length.out= 15)),
+         annotation_row = nonB.cell.order %>% select( Sample,  CellBarcode) %>% column_to_rownames('CellBarcode' ) %>%  as.data.frame(),
+         annotation_col = gene.order %>% select(chr, Gene) %>% column_to_rownames('Gene' ) %>%  as.data.frame() ,
+         annotation_colors  = list(  chr = chr.colors,Sample = col.sample[21:25] ) ,
+         legend = T, annotation_legend  = T
+         )
+
+dev.off()
+
+# only malignant order by cluster
+
+
+png(paste0( 'q.b.patient/infercnv.tumorcells.addTimepoints.png'), w = 20, h = 10, units = "in", res = 600)
+pheatmap(obs_data, 
+         scale = 'none', cluster_cols = F, cluster_rows = F, show_rownames = F, show_colnames = F,
+         color = ph.colors,  breaks = c(seq(0.85, 1.15, length.out= 15)),
+         annotation_row = cell.order %>% left_join(phe %>% select(Sample, Sampling_time)) %>% select(Donor, Sample, Sampling_time, CellBarcode) %>% 
+          column_to_rownames('CellBarcode' ) %>%  as.data.frame(),
+                annotation_col = gene.order %>% select(chr, Gene) %>% column_to_rownames('Gene' ) %>%  as.data.frame() , 
+         annotation_colors  = list(Donor = col.patient,
+                                   # B_patient = structure(c(col.sample, 'grey'), names = c(names(col.sample), 'normB')), 
+                                   Sample = col.sample, 
+                                   Sampling_time = col.samtime,
+                                   chr = chr.colors) ,
+         legend = T, annotation_legend  = T
+         )
+
+dev.off()
+```
+-SOX11 
+MC205 and MC2 have a high SHM rate (> 2%), whether they are sox11- to infer nnMCL.
+```{r}
+
+pv.sox11 <- my.Vlnplot(q.mb.p, gene =  'SOX11', x = 'B_patient',  color =  col.sample )
+eoffice::topptx(pv.sox11, filename = paste0(mydir, 'plot.pptx'), append = T, width = 6, height = 3, title = paste0('SOX11'))
+
+```
+
+

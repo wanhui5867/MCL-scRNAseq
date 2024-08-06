@@ -1,0 +1,343 @@
+---
+title: "2.integration"
+author: "hui.wan"
+date: "4/21/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, warning = F, message = F)
+knitr::opts_knit$set(root.dir = '~/OneDrive - Karolinska Institutet/Documents/Project/MCL_scRNAseq/')
+```
+
+
+```{r load pkgs}
+library(Seurat)
+library(SeuratWrappers)
+library(patchwork)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(DoubletFinder)
+library(scRepertoire)
+library(harmony)
+library(clustree)
+#library(scPred)
+library(RColorBrewer)
+library(ggpubr)
+library(eoffice)
+library(SeuratData)
+library(Azimuth)
+library(djvdj)
+library(pheatmap)
+source(file = '_src/Rfunctions_for_scRNA.R')
+source(file = '_src/global_setting.R')
+```
+
+
+
+```{r set variables}
+
+outfile = 'plots/plot_0628.pptx'
+
+```
+
+
+
+# InferCNV
+
+## prepare the input of inferCNV
+  
+### Read data
+```{r read data and find B cluster}
+data.norm <- read_rds('Matrix/02.Integrate.rds')
+markers.B           <- c("CD19","MS4A1","CD79A")
+markers.T.sub            <- c("CD3E","CD4","CD8A")
+DimPlot(data.norm, group.by = "SCT_snn_res.0.6")
+
+DimPlot(data.norm, group.by = "SCT_snn_res.0.6" , reduction = 'umap' , label = TRUE, label.size = 3,raster=FALSE) + NoLegend()  +
+DimPlot(data.norm, group.by = "orig.ident" , reduction = 'umap' , label = F, label.size = 3) + NoLegend() 
+
+
+FeaturePlot(data.norm, reduction = 'umap', dims = 1:2, features = markers.B, ncol = 3,   order = T, raster = F)
+FeaturePlot(data.norm, reduction = 'umap', dims = 1:2, features = markers.T.sub, ncol = 3,   order = T)
+
+```
+
+
+```{r fig.width=8, fig.height=4}
+myfeatures <- c("CD3E", "CD4", "CD8A", "NKG7", "GNLY", "MS4A1", "CD19", 'CD79A',"CD14", "LYZ", "MS4A7", 
+    "FCGR3A", "CST3", "FCER1A", "CD68", "CD14", 'HBQ1', 'HBM', 'GYPA')
+
+#FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = myfeatures, ncol = 3,   order = T)
+VlnPlot(data.norm, features = myfeatures, ncol = 5, pt.size = 0)
+ggsave(last_plot(), filename = 'plots/1.Vlnplot.features.pdf', w = 24, h = 10)
+
+```
+
+
+```{r manually annot}
+T.clusters <- c(0,1,2,4, 11,13,23,26,29,30,31,32,34)
+B.clusters <- c(3,5,7,8,9,10,12,14,15,16,17,18,19,21,22, 28,33,36,38,39,40,41, 24,25,27)
+Mono.clusters <- c(20,37,42)
+DC.cLusters <- c(35)
+NK.clusters <- c(6) 
+
+
+Uclear <- c(6). # 6 NK/T?
+```
+
+
+
+
+### B: normal vs patients
+
+
+
+```{r inferCNV: prepare inputdata Only B }
+q.b <- subset(data.norm, SCT_snn_res.0.6 %in% B.clusters ) 
+
+#1. Raw Counts Matrix for Genes x Cells
+counts_matrix = GetAssayData(q.b, array = 'RNA', slot="counts")
+
+#2. sample/cell annotation:  two columns: cell name + cell type annotation (normal/malignant) and there is no column header.
+annotations_file = q.b@meta.data %>% select(Celltype =  Cancer_type ,Sample = orig.ident)
+table(annotations_file$Celltype)
+write_tsv(annotations_file %>% rownames_to_column('CellBarcode'),'infercnv/input/Bcells.cell_annotation.txt', col_names = F )
+
+# 3. Gene ordering file: downlaod from https://data.broadinstitute.org/Trinity/CTAT/cnv/hg38_gencode_v27.txt
+gene_order_file = read_tsv('~/OneDrive - Karolinska Institutet/Mac/Project/MCL_scRNAseq/_ref/hg38_gencode_v27.txt', col_names = F) %>% 
+  column_to_rownames('X1')
+
+ library(infercnv)
+
+infercnv_obj = CreateInfercnvObject(raw_counts_matrix=counts_matrix,
+                                    annotations_file= annotations_file,
+                                    gene_order_file=gene_order_file,
+                                    ref_group_names=c('Health'))
+
+save(infercnv_obj, file =  "infercnv/input/Bcells.Robj")
+
+```
+
+
+## run inferCNV 
+There is two model: one is fast way that not run HMM , another is urn HMM to get the more precise CNV information, suggests to run both
+Run on Uppmax: /proj/snic2020-6-100/private/scRNA/PIK3D_MZL/20221122/infercnv
+
+During the waiting, could run following cell annotation first.
+
+```{r plot infercnv}
+library(infercnv)
+
+data.norm <- readRDS("Matrix/03_data_cellannot_BCRfilt.inferedMalignant.rds")
+# q.b <- readRDS('q.all.b/01.subset.count.norm.clust.rds')
+
+infercnv_obj =  readRDS('infercnv/output_hBvsmB/run.final.infercnv_obj')
+
+# lost the sample group info
+plot_cnv(infercnv_obj, ref_title = "Healthy (B cell)", obs_title = "Patient (B cell)", out_dir = 'infercnv/output_hBvsmB',
+          png_res = 900, output_filename = 'heatmap_CNV.png', output_format = 'png')
+```
+
+## infercnv self-plot
+
+
+```{r heatmap setting}
+
+data.norm <- readRDS("./Matrix/03_data_cellannot_BCRfilt.inferedMalignant.rds")
+q.b <- subset(data.norm, subset = celltype_inferMalig %in% c( 'Malignant', 'B' )  )
+
+library(pheatmap)
+
+# infercnv object ---
+infercnv_obj = readRDS('infercnv/output_hBvsmB/run.final.infercnv_obj')
+
+
+# gene order ----
+gene.order = infercnv_obj@gene_order %>% rownames_to_column('Gene')
+write_tsv(gene.order, 'infercnv/output_hBvsmB/geneorder.txt')
+
+# cell order ---
+library(TreeTools)
+trees <- phytools::read.newick(paste0('infercnv/output_hBvsmB/infercnv.observations_dendrogram.txt'))
+cell.order.default = unlist(TipLabels(trees))
+cell.order.default.df = data.frame(CellBarcode = cell.order.default)  %>%
+        left_join( q.b@meta.data %>% select(Sample, CellBarcode) ) %>%
+        group_by(Sample) %>% mutate(Cell_order_inferCNV = row_number())
+
+cell.order = q.b@meta.data %>% 
+  select(Sample,  CellBarcode, celltype_inferMalig) %>% 
+  left_join(cell.order.default.df) %>% 
+  mutate(Cell_type = if_else(celltype_inferMalig == 'Malignant',  'Malignant', 'Non-malignant')) %>% 
+  arrange(desc(Cell_type), Sample,  Cell_order_inferCNV) %>% 
+  # arrange( Cluster, Cell_order_inferCNV) %>% 
+  mutate(cellorder = row_number()) %>% 
+  left_join(phe %>% select(Sample, Donor))
+  
+  
+# heatmap --- 
+# obs data = normB + tumorB
+obs_data = t(infercnv_obj@expr.data)[cell.order$CellBarcode, ]
+
+# ref data - nonB
+nonB.cell.order = data.frame(CellBarcode = colnames(infercnv_obj@expr.data)[unlist(infercnv_obj@reference_grouped_cell_indices)]) %>% 
+  filter(CellBarcode %in% cell.order$CellBarcode,) %>% 
+    mutate(NewCellBarcode = str_replace_all(str_replace_all(CellBarcode, 'MC205R_BM', 'MC205Rb'), 'MC205R_LN', "MC205Rl")) %>% 
+    mutate(Sample = str_remove_all(NewCellBarcode, '_.*')) %>% arrange(Sample) %>% 
+    filter(Sample == 'NC01') %>% 
+    # mutate(Sample = str_remove_all(CellBarcode, '_.*')) %>% arrange(Sample) %>% 
+  mutate(Cell_type = 'Non-malignant')
+ref_data = t(infercnv_obj@expr.data)[nonB.cell.order$CellBarcode, ]
+
+# all data = ref  + obs
+all.cell.order = cell.order %>% bind_rows(nonB.cell.order) %>% filter(!is.na(Donor))
+all.cell.data = base::rbind(obs_data,ref_data)
+
+# setting colors
+ph.colors <- c('#00008B','#24249B','#4848AB','#6D6DBC','#9191CC','#B6B6DD','#DADAEE','#FFFFFF',
+                     '#EEDADA','#DDB6B6','#CC9191','#BC6D6D','#AB4848','#9B2424','#8B0000')
+chr.colors <- structure(rep(c('grey20', 'grey80'), 11)  , names = str_c('chr', 1:22))  
+malignant.colors <- structure(c("#E41A1C", "grey50"), names = c('Malignant', 'Non-malignant'))
+
+```
+
+
+
+```{r heatmap of infercnv}
+
+# obs+ref heatmap with legend : Error duplicated rownames 
+# use below obs
+png(paste0('infercnv/output_hBvsmB//heatmap.cnv.allcells.png'), w = 20, h = 15, units = "in", res = 600)
+pheatmap(all.cell.data, 
+         scale = 'none', cluster_cols = F, cluster_rows = F, show_rownames = F, show_colnames = F,
+         color = ph.colors,  breaks = c(seq(0.85, 1.15, length.out= 15)),
+         annotation_row = all.cell.order %>% select(Donor, Sample, Cell_type, CellBarcode) %>% 
+           column_to_rownames('CellBarcode' ) %>%  as.data.frame(),
+         annotation_col = gene.order %>% select(chr, Gene) %>% column_to_rownames('Gene' ) %>%  as.data.frame() ,
+         annotation_colors  = list(Donor = col.patient, Sample = col.sample, Cell_type = malignant.colors, chr = chr.colors) ,
+         legend = T, annotation_legend  = T
+         )
+
+dev.off()
+
+
+# obs heatmap with legend
+png(paste0('infercnv/output_hBvsmB/heatmap.cnv.obscells.addRowAnnot.png'), w = 20, h = 15, units = "in", res = 600)
+pheatmap(obs_data, 
+         scale = 'none', cluster_cols = F, cluster_rows = F, show_rownames = F, show_colnames = F,
+         color = ph.colors,  breaks = c(seq(0.85, 1.15, length.out= 15)),
+         annotation_row = all.cell.order  %>% filter(CellBarcode %in% rownames(obs_data) ) %>% select(Donor, Sample, Cell_type, CellBarcode) %>% distinct() %>%    column_to_rownames('CellBarcode' ) %>%  as.data.frame(),
+         annotation_col = gene.order %>% select(chr, Gene) %>% column_to_rownames('Gene' ) %>%  as.data.frame() ,
+         annotation_colors  = list(  chr = chr.colors, Donor = col.patient, Sample = col.sample, Cell_type = malignant.colors) ,
+         legend = T, annotation_legend  = T
+         )
+
+dev.off()
+
+# ref heatmap 
+ref_data = t(infercnv_obj@expr.data)[cell.order$CellBarcode[cell.order$Donor == 'NC01'], ]
+ref.cell.order = cell.order %>%  filter(Donor == 'NC01') %>% arrange(Donor, Sample, cellorder)
+
+png(paste0( 'infercnv/output_hBvsmB/infercnv.heatmap.NC01.Bcells.png'), w = 20, h = 10, units = "in", res = 600)
+pheatmap(ref_data, 
+         scale = 'none', cluster_cols = F, cluster_rows = F, show_rownames = F, show_colnames = F,
+         color = ph.colors,  breaks = c(seq(0.85, 1.15, length.out= 15)),
+         # annotation_row = ref.cell.order %>% select(Donor, Sample, CellBarcode) %>% 
+         #   column_to_rownames('CellBarcode' ) %>%  as.data.frame(),
+         annotation_col = gene.order %>% select(chr, Gene) %>% column_to_rownames('Gene' ) %>%  as.data.frame() ,
+         annotation_colors  = list(chr = chr.colors) ,
+         # annotation_colors  = list(Donor = col.patient, Sample = col.sample, chr = chr.colors) ,
+         legend = T, annotation_legend  = T
+         )
+
+dev.off()
+
+
+
+# only malignant order by cluster
+tumorB_data = t(infercnv_obj@expr.data)[cell.order$CellBarcode[cell.order$Cell_type == 'Malignant'], ]
+tumorB.cell.order = cell.order %>%  filter(Cell_type == 'Malignant') %>% arrange(Donor, Sample, cellorder)
+ 
+
+png(paste0( 'infercnv/output_hBvsmB/infercnv.heatmap.tumorcells.png'), w = 20, h = 10, units = "in", res = 600)
+pheatmap(tumorB_data, 
+         scale = 'none', cluster_cols = F, cluster_rows = F, show_rownames = F, show_colnames = F,
+         color = ph.colors,  breaks = c(seq(0.85, 1.15, length.out= 15)),
+         annotation_row = tumorB.cell.order %>% select(Donor, Sample, CellBarcode) %>% 
+           column_to_rownames('CellBarcode' ) %>%  as.data.frame(),
+         annotation_col = gene.order %>% select(chr, Gene) %>% column_to_rownames('Gene' ) %>%  as.data.frame() ,
+         annotation_colors  = list(Donor = col.patient, Sample = col.sample, chr = chr.colors) ,
+         legend = T, annotation_legend  = T
+         )
+
+dev.off()
+
+# only ref order by cluster
+tumorB_data = t(infercnv_obj@expr.data)[cell.order$CellBarcode[cell.order$Cell_type == 'Malignant'], ]
+tumorB.cell.order = cell.order %>%  filter(Cell_type == 'Malignant') %>% arrange(Donor, Sample, cellorder)
+ 
+
+png(paste0( 'infercnv/output_hBvsmB/infercnv.heatmap.tumorcells.png'), w = 20, h = 10, units = "in", res = 600)
+pheatmap(tumorB_data, 
+         scale = 'none', cluster_cols = F, cluster_rows = F, show_rownames = F, show_colnames = F,
+         color = ph.colors,  breaks = c(seq(0.85, 1.15, length.out= 15)),
+         annotation_row = tumorB.cell.order %>% select(Donor, Sample, CellBarcode) %>% 
+           column_to_rownames('CellBarcode' ) %>%  as.data.frame(),
+         annotation_col = gene.order %>% select(chr, Gene) %>% column_to_rownames('Gene' ) %>%  as.data.frame() ,
+         annotation_colors  = list(Donor = col.patient, Sample = col.sample, chr = chr.colors) ,
+         legend = T, annotation_legend  = T
+         )
+
+dev.off()
+```
+
+
+
+## BCR clone
+```{r}
+
+format.bcr <- function(sample) {
+  df.bcr = read_tsv(paste0('BCR/SHM/igblast.', sample, '.txt'))
+
+  df.bcr.s = df.bcr %>% 
+    # transmute(sequence_id, productive, v_call, j_call, sequence_alignment,germline_alignment,
+    #           junction, np1, np2, cdr1, cdr2, cdr3, fwr1, fwr2, fwr3, fwr4, 
+    #           v_identity, v_germline_alignment, d_germline_alignment, j_germline_alignment) %>% 
+    filter(grepl('IGH' , v_call)) # only support IGH now
+  
+  write_tsv(df.bcr.s,  paste0('BCR/SHM/forViCloD/',sample, '.forViCloD.txt'), na = '')
+
+}
+
+dir.create('BCR/SHM/forViCloD/')
+
+map(phe$orig.ident[phe$Patient != 'MC201' & phe$Cancer_type == 'MCL'], format.bcr)
+```
+
+
+## CNV score
+```{r CNV score}
+infercnv_obj = readRDS('infercnv/output_hBvsmB/run.final.infercnv_obj')
+
+#cnv.exp.scale = apply(cnv.exp, 2, function(x) scales::rescale(x , to = c(-1, 1)) ) 
+df.cnv = as.data.frame(infercnv_obj@expr.data)
+colnames(df.cnv) = colnames(infercnv_obj@expr.data)
+rownames(df.cnv ) = rownames(infercnv_obj@expr.data)
+
+cnv.score = df.cnv %>% rownames_to_column('Gene') %>% 
+  gather(CellBarcode, cnv_denoise, -Gene) %>% 
+  group_by(CellBarcode) %>% 
+  mutate(cnv = if_else(cnv_denoise <= 0.95, -1, if_else(cnv_denoise >= 1.05, 1, 0)) # method1
+         # cnv_scale = scales::rescale(cnv_denoise , to = c(-1, 1)) # vector memory exhausted (limit reached?)
+         ) %>% # method2
+  summarise(CNVscore.1 = sum(abs(cnv))
+            # ,
+            # CNVscore.2 = sum(cnv_scale^2) 
+           # CNVscore.3 = sum(abs(cnv_scale))
+            )  
+
+
+write_tsv(cnv.score, 'infercnv/output_hBvsmB/Bcells.CNVscore.tsv')
+```
+

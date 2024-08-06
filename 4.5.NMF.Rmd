@@ -1,0 +1,792 @@
+---
+title: "NMF"
+output: html_document
+date: "2023-09-09"
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, warning = F, message = F)
+knitr::opts_knit$set(root.dir = '~/OneDrive - Karolinska Institutet/Documents//Project/MCL_scRNAseq//')
+```
+
+
+```{r load pkgs}
+library(Seurat)
+library(patchwork)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(DoubletFinder)
+library(scRepertoire)
+library(harmony)
+library(clustree)
+library(scPred)
+library(RColorBrewer)
+library(ggpubr)
+library(eoffice)
+library(grid)
+library(EnhancedVolcano)
+library(monocle)
+library(SeuratWrappers)
+library(rstatix)
+source(file = '_src/Rfunctions_for_scRNA.R')
+source(file = '_src/global_setting.R')
+select = dplyr::select
+```
+
+
+## set variables
+```{r gloable vars}
+mydir = 'q.samples/NMF//'
+dir.create(mydir)
+outfile = paste0(mydir, 'plot.pptx')
+
+
+```
+
+
+To find the common features among different patients, here, we use NMF to extract the molecular program of malignant cells for each patient, and then find the common biological programs among patients/groups. 
+
+Step1: NMF on each patient, python tools : cNMF
+Step2: analyse all programs from patients together: R
+
+# 1. cNMF (performed on UPPMAX)
+/proj/snic2020-6-100/private/huwan/scRNA/MCL_scRNAseq/MCL_workplace/NMF
+
+## 1. install packages
+```{python install}
+module load conda
+conda create -n cnmf_env --yes --channel bioconda --channel conda-forge --channel defaults python=3.7 fastcluster matplotlib numpy palettable pandas scipy 'scikit-learn>=1.0' pyyaml 'scanpy>=1.8' && conda clean --yes --all # Create environment, cnmf_env, containing required packages
+conda activate cnmf_env # Activate cnmf_env - necessary before running cnmf
+pip install cnmf # install the actual cnmf package
+```
+
+
+## 2. prepare input (Mac)
+_src/3-4.eachSample.malignantBtoNMF.R
+
+```{r prepare cNMF input}
+
+sample = 'MC1R'
+q.s <- readRDS(paste0('q.samples/Matrix/', sample, '.Malignantcells.rds'))
+
+sample.meta.data = q.s@meta.data
+sample.count = as.data.frame(q.s@assays$RNA@counts)
+sample.count = sample.count[rowSums(sample.count) >0, ] # delect non-express genes
+sample.count = sample.count[!str_detect(rownames(sample.count ), "^MT-"), ] # delect Mito gene
+sample.count = data.frame(t(sample.count)) # transponse
+write.table(sample.count, file = paste0('q.samples/NMF/input/', sample, ".count.txt"), quote = F, sep = '\t', row.names = T, col.names = T)
+```
+
+## 3. run cnmf (Uppmax)
+
+### 3.1 CNMF run
+```{python}
+conda activate cnmf_env
+
+
+for i in `cat ../sample_1.list `; do \
+cnmf prepare --output-dir ./output/ --name $i -c ./input/${i}.count.txt -k 2 3 4 5 6 7 8 9 10 --n-iter 100 --seed 14 --total-workers 1 --numgenes 2000 ; \
+cnmf factorize --output-dir ./output/ --name $i --worker-index 0 --total-workers 1 ; \
+cnmf combine --output-dir ./output/ --name $i ; \ 
+rm -f ./output/${i}/cnmf_tmp/*.spectra.k_*.iter_*.df.npz ; \
+cnmf k_selection_plot --output-dir ./output/ --name $i ;\
+done
+
+```
+
+
+### 3.2 check the k plot to select the K 
+
+```{python}
+cnmf consensus --output-dir ./output/ --name MC2D    --components 3 --local-density-threshold 0.02  --show-clustering
+cnmf consensus --output-dir ./output/ --name MC3D    --components 5 --local-density-threshold 0.02  --show-clustering
+cnmf consensus --output-dir ./output/ --name MC3P    --components 5 --local-density-threshold 0.02  --show-clustering
+cnmf consensus --output-dir ./output/ --name MC3Rb   --components 5 --local-density-threshold 0.02  --show-clustering
+cnmf consensus --output-dir ./output/ --name MC3Rl   --components 6 --local-density-threshold 0.02  --show-clustering
+cnmf consensus --output-dir ./output/ --name MC4R1   --components 6 --local-density-threshold 0.02  --show-clustering
+cnmf consensus --output-dir ./output/ --name MC4R2   --components 4 --local-density-threshold 0.02  --show-clustering
+cnmf consensus --output-dir ./output/ --name MC201R1 --components 5 --local-density-threshold 0.02  --show-clustering
+cnmf consensus --output-dir ./output/ --name MC201R2 --components 5 --local-density-threshold 0.02  --show-clustering
+cnmf consensus --output-dir ./output/ --name MC202D  --components 3 --local-density-threshold 0.02  --show-clustering
+cnmf consensus --output-dir ./output/ --name MC202R  --components 4 --local-density-threshold 0.02  --show-clustering
+cnmf consensus --output-dir ./output/ --name MC203D  --components 4 --local-density-threshold 0.02  --show-clustering
+cnmf consensus --output-dir ./output/ --name MC203R  --components 5 --local-density-threshold 0.02  --show-clustering
+cnmf consensus --output-dir ./output/ --name MC204D  --components 6 --local-density-threshold 0.02 --show-clustering
+cnmf consensus --output-dir ./output/ --name MC205D  --components 5 --local-density-threshold 0.02 --show-clustering
+cnmf consensus --output-dir ./output/ --name MC205R  --components 5 --local-density-threshold 0.02 --show-clustering
+cnmf consensus --output-dir ./output/ --name MC206D  --components 4 --local-density-threshold 0.02 --show-clustering  #  7
+cnmf consensus --output-dir ./output/ --name MC206R  --components 6 --local-density-threshold 0.02 --show-clustering
+cnmf consensus --output-dir ./output/ --name MC207R  --components 2 --local-density-threshold 0.02 --show-clustering
+
+```
+
+## 3.3 output
+- *.gene_spectra_score.*.txt:  gene x program , Z-score unit gene expression program matrix 
+- *.usages.*.consensus.txt:  program x cell 
+```{bash}
+mkdir result/
+cp output/*/*.png result/
+cp output/*/*.gene_spectra_score.*.txt result/
+cp output/*/*.usages.*.consensus.txt result/
+
+cd result/
+ls *.usages.*.consensus.txt > cellxprogram.file.list
+ls *.gene_spectra_score*.txt > genexprogram.file.list
+
+```
+
+# 2. Analysis NMF
+## 1. read data and filter program  
+```{r read data}
+read_cellXprog <- function(sample, filename){
+  df_cp = read_tsv(paste0('q.samples/NMF/result/',filename)) %>% 
+    gather(Program_ID, score, -`...1`) %>% 
+    mutate(CellBarcode = `...1`, Sample = sample, Program = str_c(Sample, '_V',Program_ID)) %>% 
+    select(CellBarcode, Sample, Program, score)
+}
+
+file_cp = read_lines('q.samples/NMF/result/cellxprogram.file.list') 
+
+df.cellXprog = map2_df(str_remove_all(file_cp, '\\..*'), file_cp, read_cellXprog)
+
+unique(df.cellXprog$Program) %>% length()
+```
+
+
+filter out program with low contributions
+```{r filter NOT USE}
+
+stat.cellXprog = df.cellXprog %>% group_by(Program) %>% summarise(score = mean(score))
+ggbarplot(stat.cellXprog, x = 'Program', y = 'score', sort.val = 'desc')
+
+cutoff_score = 0.03
+prog.rm = stat.cellXprog %>% filter(score < cutoff_score) %>% pull(Program)
+
+
+```
+
+
+## 2. select 30 top-scoring genes predict the function of program
+```{r read gene data}
+read_geneXprog <- function(sample, filename){
+  df_cp = read_tsv(paste0('q.samples/NMF/result/',filename)) %>% 
+    gather(Gene, score, -`...1`) %>% 
+    mutate(Program_ID = `...1`, Sample = sample, Program = str_c(Sample, '_V',Program_ID)) %>% 
+    select(Gene, Sample, Program, score)
+}
+
+file_gp = read_lines('q.samples/NMF/result/genexprogram.file.list') 
+
+df.geneXprog = map2_df(str_remove_all(file_gp, '\\..*'), file_gp, read_geneXprog)
+```
+
+
+# select top genes
+```{r select top genes}
+n_top = 30
+df.geneXprog.f = df.geneXprog %>% group_by(Program) %>% arrange(-score) %>% top_n(n_top) %>% mutate(Rank = row_number()) %>%          ungroup() %>% select(Sample, Program, Gene, Rank) %>% spread(Rank, Gene)
+write_tsv(df.geneXprog.f, file = paste0('q.samples/NMF/Table.Top', n_top,'GenesforPrograms.xls'), na = '')
+
+```
+
+*NEED to delete some genes with same last scoring to keep the top number*
+
+
+```{r read programXtop_gene }
+df.geneXprog.f = read_tsv(paste0('q.samples/NMF/Table.Top', n_top,'GenesforPrograms.curated.xls')) %>% 
+  gather(Rankd, Gene, -Sample, -Program)
+```
+
+
+
+The top 30 genes may over than 30 owing to same score in the last rank genes, so manually delete unimportant genes.
+
+- function for each program select (top6)
+hallmark or kegg or DLBCL
+```{r read gmt for enrichment, eval=FALSE}
+
+stromal_gs <- read.gmt("~/OneDrive - KI.SE/Mac/Project/MCL_scRNAseq/_ref/Signatures from Lenz 2008 NEJM.gmt.txt")
+kegg_gs <- read.gmt("~/OneDrive - KI.SE/Mac/Project/MCL_scRNAseq/_ref/c2.cp.kegg.v2023.1.Hs.symbols.gmt")
+hm_gs <- read.gmt("~/OneDrive - KI.SE/Mac/Project/MCL_scRNAseq/_ref/h.all.v2023.1.Hs.symbols.gmt")
+# 
+# hallmark_id <- msigdbr(species = "Homo sapiens", category = c('H')) %>% 
+#   select(term = gs_name , gene = gene_symbol) %>% mutate(term = str_remove(term, 'HALLMARK_'))
+
+
+```
+
+
+
+```{r functions of program, eval = FALSE }
+
+# Stromal gene signature - largeB cell lymphoma -------- 
+cluster.wp <- compareCluster( Gene ~ Program, data = df.geneXprog.f, fun="enricher", TERM2GENE = stromal_gs )
+pd_wp <- dotplot(filter(cluster.wp, qvalue<0.0001),showCategory=20)
+write_tsv(summary(cluster.wp), paste0('q.samples/NMF/Table.Top', n_top, 'Genes.stromal.all.xls'))
+# ggsave(pd_wp, filename = paste0('q.samples/NMF/Table.Top30Genes.kegg.all.pdf'), w =12, h = 12)
+
+
+# Hallmark enrichment ----
+program.hallmark <- compareCluster(Gene ~ Program, data = df.geneXprog.f,   fun="enricher", TERM2GENE = hm_gs ) # p.adjust < 0.05
+write_tsv(summary(program.hallmark), paste0('q.samples/NMF/Table.Top', n_top, 'Genes.gshallmark.all.xls'))
+
+
+# KEGG enrichement-----
+cluster.kegg <- compareCluster( Gene ~ Program, data = df.geneXprog.f, fun="enricher", TERM2GENE = kegg_gs )
+write_tsv(summary(cluster.kegg), paste0('q.samples/NMF/Table.Top', n_top, 'Genes.kegg.all.xls'))
+
+# select top6 pathway for each program by q value
+program.pathway_f = data.frame(summary(program.hallmark) %>% mutate(Method = 'Hallmark') ) %>%
+  bind_rows(data.frame(summary(cluster.kegg) %>% mutate(Method = 'KEGG') ) ) %>% 
+  bind_rows(data.frame(summary(cluster.wp) %>% mutate(Method = 'Stromal') ) )   %>% 
+  arrange(Program, Method, pvalue) %>% 
+  group_by(Program,Method) %>% mutate(Rank = row_number()) %>% 
+  ungroup() %>% mutate(Pathway_Rank = str_c(Method, Rank,sep = '_')) %>% 
+  filter(Rank < 6) %>%  select(Program, Pathway = ID, Pathway_Rank, p.adjust) %>% 
+  mutate(Pathway = str_replace(Pathway, 'HALLMARK_', '[HM] '),
+         Pathway = str_replace(Pathway, 'KEGG_', '[KEGG] '))
+write_tsv( program.pathway_f, paste0('q.samples/NMF/Table.Top', n_top, 'Genes.top5.long.xls'))
+write_tsv( program.pathway_f %>%  select(Program, Pathway , Pathway_Rank) %>% spread(Pathway_Rank, Pathway), 
+           paste0('q.samples/NMF/Table.Top', n_top, 'Genes.top5.wide.xls'))
+
+# Dotplot
+pd_program.hallmark <- dotplot(filter(program.hallmark, qvalue<0.05),showCategory=20, x = 'Cluster' )  +   theme(axis.text.x =  element_text(angle = 90, vjust = 0.5, hjust = 1))
+ggsave(pd_program.hallmark, filename = paste0('q.samples/NMF/Dotplot.Top', n_top, 'Genes.gshallmark.pdf'), w =8, h = 8)
+
+# networkplot 
+pn_cluster.hallmark <- cnetplot(program.hallmark, node_label="all", cex_label_gene = 0.8, color_category = "blue") 
+ggsave(pn_cluster.hallmark, filename = paste0('q.samples/NMF/network.Top', n_top, 'Genes.gshallmark.pdf'), w =8, h = 8)
+
+```
+
+
+```{r heatmap program_sample, eval = FALSE }
+# heatmap plot-- NOT FINISH need gene-cell expr.mat
+ph_sample <- function(sample, n_top = 30){
+  # sample = 'MC1R'
+  cells = q.mb.p$CellBarcode[q.mb.p$Sample == sample]
+  df.cellxgene = df.geneXprog.f %>% filter(Sample ==sample) %>% arrange(Program,as.numeric(Rankd) ) %>% 
+    mutate(Program_Rank = str_c(Program, Rankd, sep = '-'))
+    
+  mat_samp = df.cellxgene %>% select(Program_Rank, Gene) %>% 
+    left_join(as.data.frame(mat_zscore.rna[,cells]) %>% rownames_to_column('Gene')) %>% 
+    select(-Gene) %>% column_to_rownames('Program_Rank')
+  
+  write_tsv(df.cellxgene, paste0(mydir, '/samples_heatmap/', sample, 'topGene',n_top,'.xls' ))
+  
+  pheatmap(mat_samp, cluster_rows = F, cluster_cols = T, show_colnames = F,  show_rownames = F, 
+           scale = 'row',
+           main = paste0('Malignant B cells of ', sample, ' (', length(cells), ' cells)'),
+           breaks = seq(-4, 4, length.out = 100),
+            annotation_row = df.cellxgene %>% select(Program, Program_Rank) %>%  column_to_rownames('Program_Rank'), annotation_names_row = F, 
+           filename = paste0(mydir, '/samples_heatmap/heatmap.', sample, 'topGene',n_top,'.pdf'),
+           w = 8, h = 6)
+
+}
+
+q.mb.p <- read_rds('q.mb.cells/noIntegration/01.subset.count.norm.clust.rds')
+mat_zcore.rna <- ScaleData(q.mb.p, assay = 'RNA', do.scale = T, do.center = T, scale.max = 4 )
+mat_zscore.rna <- mat_zcore.rna@assays$RNA@scale.data
+
+dir.create(paste0(mydir, 'samples_heatmap/'))
+map( phe$Sample[1:20], ph_sample)
+
+
+
+```
+
+
+
+
+## 3. hierachical clustering of all program using shared genes as a similarity metric
+```{r clustering, fig.height=5, fig.width=5}
+tmp_comb = combn(unique(df.geneXprog.f$Program), 2) %>% t() %>% as.data.frame() %>% 
+    # rowwise() %>% mutate(same = if_else(V1 == V2, 1, 0)) %>% 
+  bind_rows(data.frame(V1 =unique(df.geneXprog.f$Program), V2 = unique(df.geneXprog.f$Program) ))
+
+prog.overlap <- function(x1, x2){
+  data.frame(Program_1 = x1, Program_2 = x2,
+             N_overlap =  length(intersect(df.geneXprog.f$Gene[df.geneXprog.f$Program == x1],
+                                           df.geneXprog.f$Gene[df.geneXprog.f$Program == x2]))) 
+}
+
+mat_prog_half = map2_df(tmp_comb$V1, tmp_comb$V2, prog.overlap)
+mat_prog = mat_prog_half %>% bind_rows(data.frame(Program_1 = mat_prog_half$Program_2,
+                                                  Program_2 = mat_prog_half$Program_1,
+                                                  N_overlap = mat_prog_half$N_overlap)) %>% 
+  distinct() %>% 
+  spread(Program_2, N_overlap) %>% column_to_rownames('Program_1')
+dim(mat_prog)
+
+# heatmap 
+phe_prog <- df.geneXprog.f %>% select(Sample, Program) %>% distinct() %>% left_join(phe) 
+ph <- pheatmap::pheatmap(mat_prog,  
+                         clustering_method = "average",  # "average", for top_n = 50 and 30
+                         color = rev(hcl.colors(30, "Reds")),
+                         annotation_col = phe_prog %>% select(Program, Sampling_time, Tissue ) %>% column_to_rownames('Program') %>% as.data.frame(), 
+                         annotation_colors = list( Sampling_time = col.samtime, Tissue = col.tissue, Donor = col.patient[1:11], Sample = col.sample[1:20]) )
+
+pdf(paste0('q.samples/NMF/heatmap.NMFprogram', n_top, '.pdf'), w = 14, h = 12)
+grid.draw(ph)
+dev.off
+
+saveRDS(ph, file = paste0('q.samples/NMF/meta.pheatmap.top', n_top, '.Robj'))
+
+```
+
+
+
+```{r represent genes for meta-programs}
+n_cluster = 6 # top = 50 
+n_cluster = 7 # top = 30
+n_cluster = 6 # top = 100
+n_cluster = 8 # top = 30
+
+ph_cut <- pheatmap::pheatmap(mat_prog,  cutree_rows = n_cluster,  cutree_cols = n_cluster,
+                         clustering_method = "average", # "average", for top_n = 50 and 30
+                         color = rev(hcl.colors(30, "Reds")),
+                         annotation_col = phe_prog %>% select(Program, Sampling_time, Tissue ) %>% column_to_rownames('Program') %>% as.data.frame(), 
+                         annotation_colors = list( Sampling_time = col.samtime, Tissue = col.tissue, Donor = col.patient[1:11], Sample = col.sample[1:20]) )
+
+
+pdf(paste0('q.samples/NMF/heatmap.NMFprogram', n_top, '.cut', n_cluster,'.pdf'), w = 14, h = 12)
+grid.draw(ph_cut)
+dev.off
+
+# Program - metaprogram
+ph.tree <- data.frame(Program = ph$tree_row$labels, Meta_program = cutree(ph$tree_row, k = n_cluster)) %>%  
+                     mutate(Meta_program = str_c('Meta_', Meta_program))
+write_tsv(ph.tree, paste0('q.samples/NMF/Metaprogram_program', n_top, '.xls'))
+```
+
+
+### briefly statistic program 
+
+```{r DvsR program%, fig.height=2.5, fig.width=3}
+
+df.meta_prog = ph.tree %>% left_join(phe_prog)  
+
+gb_DR <- ggbarplot(df.meta_prog %>% group_by(Meta_program, Sampling_time) %>% summarise(N_program = n_distinct(Program)), 
+          x = 'Meta_program', y = 'N_program', fill = 'Sampling_time',
+          palette = col.samtime, position = position_fill())
+
+gb_pts <- ggbarplot(df.meta_prog %>% group_by(Meta_program) %>% 
+                      summarise(N_program = n_distinct(Program), N_patient = n_distinct( Patient)) %>% 
+                      gather(Content, N, -Meta_program), 
+          x = 'Meta_program', y = 'N',  fill = 'Content', position = position_dodge(), 
+          label = T, lab.pos = 'in' )
+gb_DR / gb_pts
+ggsave(gb_DR / gb_pts, filename = paste0('q.samples/NMF/Meta.statistic.top', n_top, '.pdf') , w = 6, h = 8)
+
+```
+
+*test different N_top in step3*
+
+```{r chiseq test}
+df.meta_prog = ph.tree %>% mutate(Sample = str_remove_all(Program, '_.*')) %>% left_join(phe)
+
+st.meta_prog = df.meta_prog %>% filter(Sampling_time %in% c('Primary', 'Relapse')) %>% 
+  group_by(Meta_program) %>% mutate(total_program = n_distinct(Program)) %>% ungroup() %>% 
+  group_by(Meta_program, total_program, Sampling_time) %>% summarise(n_program = n_distinct(Program)) %>% 
+  mutate(rest_program = total_program - n_program) %>% 
+  ungroup()
+
+my.chiseq <- function(meta_program){
+  # mydf = st.b
+  # meta_program = 'Meta_P1'
+  
+ st.meta_prog %>% filter(Meta_program == meta_program) %>% select(Sampling_time, n_program, rest_program) %>% column_to_rownames('Sampling_time')  %>% pairwise_prop_test(.) %>% mutate(Meta_program = meta_program)
+
+}
+
+st.p = map_df(unique(st.meta_prog$Meta_program),my.chiseq) %>% add_significance( 'p') %>% 
+    left_join(st.meta_prog %>% transmute(group1 = Sampling_time, Meta_program, value1 = n_program/total_program * 100 ) ) %>% 
+    left_join(st.meta_prog %>% transmute(group2 = Sampling_time, Meta_program, value2 = n_program/total_program * 100 ) ) 
+
+
+write_tsv(as.data.frame(st.p), 'pvalue.program_composition.xls')
+
+#write.xlsx(as.data.frame(st.p), 'pvalue.program_composition.xlsx', sheetName = 'Programs', append = T, row.names = F, col.names = T )
+
+```
+
+
+Finally use n_top = 50 , Run again above commonad
+```{r determin top_n}
+n_top = 30
+n_cluster = 8 
+
+df.geneXprog.f = read_tsv(paste0('q.samples/NMF/Table.Top', n_top,'GenesforPrograms.curated.xls')) %>% 
+  gather(Rankd, Gene, -Sample, -Program)
+
+# 202404 rename sample
+sample_map = read_tsv('sample_IDmap.xls')
+df.geneXprog.f = df.geneXprog.f %>% left_join(sample_map) %>% mutate(Sample = Sample_new)
+
+ph <- readRDS('q.samples/NMF/meta.pheatmap.top', n_top, '.Robj')
+
+# Program - metaprogram
+ph.tree <- data.frame(Program = ph$tree_row$labels, Meta_program = cutree(ph$tree_row, k = n_cluster)) %>%  
+                     mutate(Meta_program = str_c('Meta_', Meta_program))
+write_tsv(ph.tree, paste0('q.samples/NMF/Metaprogram_program.top', n_top, '.xls'))
+
+```
+
+*Need to modify the order of metaprogram according to the heatmap by programs in the top-bottom clusters*
+
+```{r read meta-tree}
+ph.tree <-  read_tsv(paste0('q.samples/NMF/Metaprogram_program.top', n_top, '.curated.xls')) %>% 
+  filter(!is.na(Meta_program))
+
+# rewrite the shared gene - meta-program
+write_tsv(meta.genes, paste0('q.samples/NMF/Meta-program.Genelist.top', n_top, '.xls'))
+
+
+df.meta_prog = ph.tree %>% left_join(phe_prog)  
+
+gb_DR <- ggbarplot(df.meta_prog %>% group_by(Meta_program, Sampling_time) %>% summarise(N_program = n_distinct(Program)), 
+          x = 'Meta_program', y = 'N_program', fill = 'Sampling_time',
+          palette = col.samtime, position = position_fill())
+
+gb_pts <- ggbarplot(df.meta_prog %>% group_by(Meta_program) %>% 
+                      summarise(N_program = n_distinct(Program), N_patient = n_distinct( Patient)) %>% 
+                      gather(Content, N, -Meta_program), 
+          x = 'Meta_program', y = 'N',  fill = 'Content', position = position_dodge(), 
+          label = T, lab.pos = 'in' )
+
+
+
+ggsave(gb_DR / gb_pts, filename = paste0('q.samples/NMF/Meta.statistic.top', n_top, '.pdf') , w = 8, h = 8)
+eoffice::topptx(gb_DR / gb_pts, filename = outfile, append = T, width = 6, height = 5, title = paste0('meta program'))
+
+
+chisq.test(matrix(c(10,12, 13, 20), nrow = 2))  
+prop.test(x = 8, n = 8, p = 0.68) # 0.68 = N_relapse /N_primary + Nrelapse = 13/19  # modify first two number: n_relapse, n_total in the meta_program
+
+N_program_relapse = df.meta_prog %>% group_by(Sampling_time) %>% summarise(N_program = n_distinct(Program))
+prop.test(x = 10, n = 12, p = 0.66)  # expect pop = 43 / (43 + 22) = 0.66
+
+```
+
+
+```{r chisq test}
+stat.meta_prog = df.meta_prog %>% group_by(Meta_program) %>% summarize( N_sample = n_distinct(Sample))
+  
+st.meta_prog = df.meta_prog %>% filter(Sampling_time %in% c('Primary', 'Relapse')) %>% 
+  group_by(Meta_program) %>% mutate(total_program = n_distinct(Program)) %>% ungroup() %>% 
+  group_by(Meta_program, total_program, Sampling_time) %>% summarise(n_program = n_distinct(Program)) %>% 
+  mutate(rest_program = total_program - n_program) %>% 
+  ungroup()
+
+my.chiseq <- function(meta_program){
+  
+  # meta_program = 'Meta_P3'
+  
+ st.meta_prog %>% filter(Meta_program == meta_program) %>% select(Sampling_time, n_program, rest_program) %>% column_to_rownames('Sampling_time')  %>% pairwise_prop_test(.) %>% mutate(Meta_program = meta_program)
+
+}
+
+st.p = map_df(unique(st.meta_prog$Meta_program),my.chiseq) %>% add_significance( 'p') %>% 
+    left_join(st.meta_prog %>% transmute(group1 = Sampling_time, Meta_program, N_program1 = n_program, value1 = n_program/total_program * 100 ) ) %>% 
+    left_join(st.meta_prog %>% transmute(group2 = Sampling_time, Meta_program, N_program2 = n_program,value2 = n_program/total_program * 100 ) ) 
+
+
+my.prop <- function(meta_program){
+  
+ test =  prop.test(x = st.meta_prog$n_program[st.meta_prog$Meta_program == meta_program & st.meta_prog$Sampling_time == 'Relapse'], 
+            n = st.meta_prog$total_program[st.meta_prog$Meta_program == meta_program & st.meta_prog$Sampling_time == 'Relapse'], 
+            p = 0.66)  
+ 
+ return(data.frame(Meta_program = meta_program, p = test$p.value))
+}
+
+st.p = map_df(unique(st.meta_prog$Meta_program),my.prop) %>% left_join(st.meta_prog)
+
+
+write_tsv(as.data.frame(st.p), 'pvalue.program_composition.xls')
+
+```
+
+
+
+## 4. determine the function of meta-programs
+
+```{r meta-program function, eval=FALSE}
+# Method1: [NOT decides the each program's function yet] select top30-scoring genes to predict the function of program -> voting for the meta-program
+
+meta.prog = ph.tree %>% group_by(Meta_program) %>% summarise(N_program = n_distinct(Program)) 
+
+# Method2: Using the overlap genes from top30-scoring genes in the each program to predict the function of meta-program 
+meta.genes = ph.tree %>% left_join(df.geneXprog.f) %>% 
+  left_join(df.geneXprog) %>% 
+  group_by(Meta_program,Gene) %>% 
+  summarise(N = n_distinct(Program), mean_score = mean(score)) %>% left_join(meta.prog) %>% 
+  filter(N > 1) %>% arrange(Meta_program, -N, -mean_score)
+
+write_tsv(meta.genes, paste0('q.samples/NMF/Meta-program.Genelist.top', n_top, '.xls'))
+
+# Stromal gene signature - largeB cell lymphoma -------- 
+meta.wp <- compareCluster( Gene ~ Meta_program, data = meta.genes,  fun="enricher", TERM2GENE = stromal_gs )
+pd_wp <- dotplot(filter(cluster.wp, qvalue<0.0001),showCategory=20)
+write_tsv(summary(meta.wp), paste0('q.samples/NMF/MetaProgram.Table.Top', n_top, 'Genes.stromal.all.xls'))
+# ggsave(pd_wp, filename = paste0('q.samples/NMF/Table.Top30Genes.kegg.all.pdf'), w =12, h = 12)
+
+
+# Hallmark enrichment ----
+meta.hallmark <- compareCluster(Gene ~ Meta_program, data = meta.genes,    fun="enricher", TERM2GENE = hm_gs ) # p.adjust < 0.05
+write_tsv(summary(meta.hallmark), paste0('q.samples/NMF/MetaProgram.Table.Top', n_top, 'Genes.gshallmark.all.xls'))
+
+# KEGG enrichement-----
+meta.kegg <- compareCluster( Gene ~ Meta_program, data = meta.genes,   fun="enricher", TERM2GENE = kegg_gs )
+write_tsv(summary(meta.kegg), paste0('q.samples/NMF/MetaProgram.Table.', n_top, 'kegg.all.xls'))
+
+# select top6 pathway for each program by q value
+meta.pathway_f = data.frame(summary(meta.hallmark) %>% mutate(Method = 'Hallmark') ) %>%
+  bind_rows(data.frame(summary(meta.kegg) %>% mutate(Method = 'KEGG') ) ) %>% 
+  bind_rows(data.frame(summary(meta.wp) %>% mutate(Method = 'Stromal') ) )   %>% 
+  arrange(Meta_program, Method, pvalue) %>% 
+  group_by(Meta_program,Method) %>% mutate(Rank = row_number()) %>% 
+  ungroup() %>% mutate(Pathway_Rank = str_c(Method, Rank,sep = '_')) %>% 
+  filter(Rank < 6) %>%  select(Meta_program, Pathway = ID, Pathway_Rank, p.adjust) %>% 
+  mutate(Pathway = str_replace(Pathway, 'HALLMARK_', '[HM] '),
+         Pathway = str_replace(Pathway, 'KEGG_', '[KEGG] '))
+write_tsv( meta.pathway_f, paste0('q.samples/NMF/MetaProgram.Table.Top', n_top, 'Genes.top5.long.xls'))
+write_tsv( meta.pathway_f %>%  select(Meta_program, Pathway , Pathway_Rank) %>% spread(Pathway_Rank, Pathway), 
+           paste0('q.samples/NMF/MetaProgram.Table.Top', n_top, 'Genes.top5.wide.xls'))
+
+```
+
+
+GSEA enrichment
+```{r gsea top genes}
+
+run_gsea <- function(programID, annotations){
+  genelist = meta.genes %>% filter(Meta_program == programID) %>% arrange(-N, -mean_score) %>%
+    mutate(Rank = row_number())
+  genelist.order = genelist$Rank
+  names(genelist.order) = as.character(genelist$Gene)
+  genelist.order = sort(genelist.order, decreasing = T)
+  df.gesa = GSEA(geneList = genelist.order, TERM2GENE = annotations , pvalueCutoff = 1) # p.adjust < 0.05
+  return(summary(df.gesa) %>% mutate(Meta_program =programID ))
+
+}
+
+meta.hallmark.gsea <- map_df(unique(meta.genes$Meta_program),run_gsea,  annotations = hm_gs   )
+meta.kegg.gsea <- map_df(unique(meta.genes$Meta_program),run_gsea,  annotations = kegg_gs   )
+meta.wp.gsea <- map_df(unique(meta.genes$Meta_program),run_gsea,  annotations = stromal_gs   )
+write_tsv(meta.kegg.gsea, paste0('q.samples/NMF/MetaProgram.GSEA.', n_top, '.kegg.xls'))
+write_tsv(meta.hallmark.gsea, paste0('q.samples/NMF/MetaProgram.GSEA.', n_top, '.hallmark.xls'))
+write_tsv(meta.wp.gsea, paste0('q.samples/NMF/MetaProgram.GSEA.', n_top, '.stromal.xls'))
+
+```
+
+
+```{r gsea all ranks genes}
+meta.genes.all = ph.tree %>% 
+  left_join(df.geneXprog) %>% 
+  group_by(Meta_program,Gene) %>% 
+  summarise(N = n_distinct(Program), mean_score = mean(score)) %>% left_join(meta.prog) %>% 
+  filter(N > 1) %>% arrange(Meta_program, -N, -mean_score)
+
+run_gsea.all <- function(programID, annotations){
+  genelist = meta.genes.all %>% filter(Meta_program == programID) %>% arrange(-N, -mean_score) %>%
+    mutate(Rank = row_number())
+  genelist.order = genelist$Rank
+  names(genelist.order) = as.character(genelist$Gene)
+  genelist.order = sort(genelist.order, decreasing = T)
+  df.gesa = GSEA(geneList = genelist.order, TERM2GENE = annotations , pvalueCutoff = 1) # p.adjust < 0.05
+  return(summary(df.gesa) %>% mutate(Meta_program =programID ))
+
+}
+
+meta.hallmark.gsea.all <- map_df(unique(meta.genes$Meta_program),run_gsea.all,  annotations = hm_gs   )
+meta.kegg.gsea.all <- map_df(unique(meta.genes$Meta_program),run_gsea.all,  annotations = kegg_gs   )
+meta.wp.gsea.all <- map_df(unique(meta.genes$Meta_program),run_gsea.all,  annotations = stromal_gs   )
+write_tsv(meta.kegg.gsea.all, paste0('q.samples/NMF/MetaProgram.GSEA.', '.kegg.xls'))
+write_tsv(meta.hallmark.gsea.all, paste0('q.samples/NMF/MetaProgram.GSEA.', '.hallmark.xls'))
+write_tsv(meta.wp.gsea.all, paste0('q.samples/NMF/MetaProgram.GSEA.',  '.stromal.xls'))
+
+```
+
+
+## 5.compare gene expression each program between groups
+
+1. z-score for Gene X Cell matrix
+2. average covert to GeneSet(metaprogram) X Cell
+3. plot geneset expression among samples to find relapse-associated meta-program
+
+```{r gene expression}
+# using all overlapped genes 
+meta.genes = read_tsv(paste0('q.samples/NMF/Meta-program.Genelist.top', n_top, '.xls')) # using all overlapped genes 
+
+# using represented genes
+meta.genes = readxl::read_excel('q.samples/NMF/SupplementaryTable.NMF.xlsx', sheet = 2) %>% 
+  gather(Meta_program, Gene, -`Shared programs`) %>% 
+  filter(!is.na(Gene), `Shared programs` == 'Functions' | is.na(`Shared programs` )) %>% 
+  select(-`Shared programs`)
+  
+
+# read Gene X Cell matrix 
+q.mb.p <- read_rds('q.mb.cells/noIntegration/01.subset.count.norm.clust.rds')
+Idents(q.mb.p)   <- 'Sample'
+levels(q.mb.p)  <- order.sample[1:20]
+
+# zscore transform matrix metagenes X cell
+mat_zcore <- ScaleData(q.mb.p, assay = 'SCT', do.scale = T, do.center = T, scale.max = 4 )
+mat_zscore <- GetAssayData(mat_zcore, slot = "scale.data")
+#mat_zscore <- q.mb.p@assays$SCT@scale.data
+
+df.mat = as.data.frame(mat_zscore) %>% rownames_to_column('Gene') %>%
+  filter(Gene %in% meta.genes$Gene) %>% 
+  gather(CellBarcode, expr, -Gene) %>% 
+  right_join(meta.genes) 
+
+# calculate meta-program X cell 
+df.mat.prog = df.mat %>%  group_by(CellBarcode, Meta_program) %>% 
+  summarise(avg_expr = mean(expr, na.rm = T)) %>% left_join(q.mb.p@meta.data)
+
+# plot overall
+ggboxplot(df.mat.prog ,
+          x = 'Sample', y = 'avg_expr', fill = 'Sampling_time', outlier.shape = NA,
+          order = phe %>% arrange(Sampling_time) %>% pull(Sample),
+          facet.by  = 'Meta_program', scale = 'free_y')
+
+
+# plot barplot 
+boxplot.meta.expr <- function(programID){
+  #programID = 'Meta_Program.5' 
+  print(programID)
+  pf = df.mat.prog %>% filter(Meta_program == programID) %>% filter(!is.na(Sample))
+  x.order = pf %>% group_by(Sample) %>% summarise(rank = median(avg_expr)) %>% arrange(-rank)  %>% left_join(phe)
+  
+  if (sd(x.order$rank) == 0) {
+    pvalue = data.frame(p = 1)
+  }else{
+      pvalue = x.order %>% filter(Sampling_time != 'Progress') %>% wilcox_test(rank ~ Sampling_time)  %>% 
+    add_xy_position()
+  }
+  
+  ggbarplot(x.order, x = 'Sample', y = 'rank', fill = 'Sampling_time', ylab = 'Program expression',
+            title = paste0(programID, ' p=', pvalue$p), x.text.angle = 30, palette = col.samtime,
+          order = x.order$Sample) + rremove('legend') + rremove('xlab') +
+  #  stat_pvalue_manual(pvalue, label = "p",  remove.bracket = T) + 
+ theme(panel.background = element_rect(colour = 'black', size = 2)) 
+
+}
+
+p_list = map(unique(meta.genes$Meta_program)[c(1,2:4,5:7)],boxplot.meta.expr)
+
+
+eoffice::topptx(plot_grid(plotlist = p_list, nrow = 3), 
+                filename = outfile, append = T, width = 8, height = 6, title = paste0('meta program - comparison'))
+
+
+# plot lineplot 
+pl.prog = df.mat.prog %>% group_by(Meta_program, Sample) %>% summarise(rank = median(avg_expr)) %>% arrange(-rank)  %>% left_join(phe)
+write_tsv(pl.prog, paste0(mydir, 'sample.metaprogrm.avgExpression.xls'))
+
+# # old 
+# ggline(pl.prog %>% filter(Donor %in% c('MC3', 'MC205', 'MC202', 'MC206'),  Sample != 'MC3P1') %>% 
+#          mutate( Sampling_time = factor(Sampling_time, levels = c('Primary', 'Relapse'))),
+#        x = 'Sampling_time', y = 'rank', ylab = 'Program expression',
+#        facet.by = 'Meta_program',  scale = 'free', nrow = 1,
+#        group = 'Donor',   color = 'Donor', palette = col.patient) +
+#   # rremove('legend') + 
+#   stat_compare_means(paired = F, label = '..p..') + 
+#   # stat_compare_means(paired = T, label = '..p..') + 
+#   scale_y_continuous(expand=expand_scale(mult=c(0.05, 0.1)))
+
+# new 
+group_comp = read_tsv('sample_compare.xls')
+df_exp = group_comp %>% gather(Time, Sample, -Donor, -Group,-Treatment, -ID) %>% 
+  left_join(pl.prog %>% select(Sample, Meta_program, rank), by = 'Sample')
+
+ggline(df_exp ,
+       x = 'Time', y = 'rank', ylab = 'Program expression',group = 'ID', 
+       facet.by = 'Meta_program',  scale = 'free', nrow = 1,
+       
+       color = 'Treatment') +
+  # rremove('legend') + 
+  stat_compare_means(paired = F, label = '..p..') + 
+  # stat_compare_means(paired = T, label = '..p..') + 
+  scale_y_continuous(expand=expand_scale(mult=c(0.05, 0.1)))
+
+
+# plot seperated meta_program and treatment group
+stat_p = df_exp %>% group_by(Treatment, Meta_program) %>% 
+  wilcox_test(rank ~ Time, paired = T)  %>% 
+  add_xy_position()
+
+ggplot(df_exp, aes(x = Time, y = rank, group = ID)) +
+  geom_line(aes(color = Donor)) +
+  scale_color_manual(values =col.patient ) + 
+   new_scale_color() +
+  geom_point(aes(color = Sample)) +
+  scale_color_manual(values = col.sample ) + 
+  facet_grid(Meta_program ~ Treatment, scales = 'free_y') +
+  theme_bw() +
+  stat_pvalue_manual(stat_p) +
+  # stat_compare_means(comparisons = list(c('Time1', 'Time2')), paired = T, label = '..p..') + 
+  scale_y_continuous(expand=expand_scale(mult=c(0.05, 0.1)))
+
+eoffice::topptx(last_plot(),  filename = outfile, append = T, width = 4, height = 7, title = paste0('meta program - paired comparsion'))
+
+# plot seperated meta_program but colored by treatment group -----
+
+ggplot(df_exp, aes(x = Time, y = rank, group = ID)) +
+  # geom_line(aes(color = Donor, linetype = Treatment)) +
+  geom_line(aes(color = Treatment)) +
+  scale_color_manual(values =col.treatment ) + 
+  new_scale_color() +
+  geom_point(aes(color = Sample)) +
+  scale_color_manual(values = col.sample )+ 
+  facet_wrap(~ Meta_program, nrow = 1, scale = 'free_y') +
+  theme_bw() +
+  stat_compare_means(comparisons = list(c('Time1', 'Time2')), paired = T, label = '..p..') + 
+  scale_y_continuous(expand=expand_scale(mult=c(0.05, 0.1)))
+
+
+eoffice::topptx(last_plot(),  filename = outfile, append = T, width = 8, height = 2.5, title = paste0('meta program - paired comparsion'))
+
+```
+
+
+```{r heatmap of represent genes }
+mat_avg_gene = AverageExpression(q.mb.p, assays = 'SCT', features = meta.genes$Gene,
+                                 group.by = 'Sample', return.seurat = T)@assays$SCT@data
+
+
+myheatmap(mat_avg_gene, cluster_rows = F,
+          annotation_col = phe %>% select(Sample, Sampling_time) %>% column_to_rownames('Sample'),
+          annotation_row = meta.genes %>% select(Gene, Meta_program) %>% filter(!duplicated(Gene)) %>% column_to_rownames('Gene'),
+          annotation_colors = list(Sampling_time = col.samtime)
+          )
+
+
+```
+
+
+```{r select genes among groups}
+
+mat_avg_p= df.mat %>% left_join(q.mb.p@meta.data) %>% group_by(Sample,Gene)  %>% summarise(rank = mean(expr))
+mat_avg_pp = mat_avg_p  %>%  left_join(phe)  %>%   filter(Sampling_time != 'Progress') %>% 
+  group_by(Gene) %>%  wilcox_test(rank ~ Sampling_time)  %>% left_join(meta.genes)
+
+write_tsv(mat_avg_pp, 'q.samples/NMF/DvsR.representGenes.tsv')
+write_tsv(mat_avg_pp, 'q.samples/NMF/DvsR.overlapGenes.tsv')
+
+```
+
+
+## compare programs between patients
+
+```{r compare the program between pairs}
+pl.prog = read_tsv( paste0(mydir, 'sample.metaprogrm.avgExpression.xls'))
+df.geneXprog.f = read_tsv(paste0('q.samples/NMF/Table.Top', n_top,'GenesforPrograms.curated.xls')) %>%  gather(Rankd, Gene, -Sample, -Program)
+meta.genes = readxl::read_excel('q.samples/NMF/SupplementaryTable.NMF.xlsx', sheet = 2) 
+ggbarplot(df.geneXprog.f %>% group_by(Sample) %>% summarise(N_program ))
+
+```
+

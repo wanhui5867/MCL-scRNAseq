@@ -1,0 +1,1291 @@
+---
+title: "3.Cell_annotation"
+author: "hui.wan"
+date: "5/3/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, warning = F, message = F)
+knitr::opts_knit$set(root.dir = '~/OneDrive - Karolinska Institutet/Documents//Project/MCL_scRNAseq//')
+```
+
+
+```{r load pkgs}
+library(Seurat)
+library(patchwork)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(DoubletFinder)
+library(scRepertoire)
+library(harmony)
+library(clustree)
+#library(scPred)
+library(RColorBrewer)
+library(ggpubr)
+library(eoffice)
+library(SeuratData)
+library(Azimuth)
+library(djvdj)
+library(pheatmap)
+source(file = '_src/Rfunctions_for_scRNA.R')
+source(file = '_src/global_setting.R')
+```
+
+
+
+```{r variables}
+
+# order_majorCell = c('Malignant', 'B', 'T',  'Myeloid')
+# color_majorCell = structure(ggsci::pal_jco()(length(order_majorCell)+1)[c(4,1,2)], names = order_majorCell)
+
+
+color_clone1 = structure(brewer.pal(9, 'Set1')[c(1,3,9)], names = c('Dominant', 'Minor','NA'))
+
+isotype_list = c('IGHD', 'IGHM', "IGHA1", "IGHA2", "IGHG1", "IGHG2", "IGHG3", "IGHG4", 'IGHE')
+col_isotype = structure( c(brewer.pal(9, 'Paired')),  names = isotype_list)
+
+outfile = paste0( 'plots/plot.allcells.pptx')
+
+```
+
+
+# Methods
+1. according to classical markers
+2. automatic annotation
+3. Add annotation of the malignant cells by inferCNV
+4. Add BCR information for B cells
+
+```{r set variable for plot}
+data.norm <- readRDS('Matrix/02.Integrate.rds')
+my.reduction = 'umap'
+sel.clust = "SCT_snn_res.0.6" 
+
+data.norm$Tissue <- plyr::mapvalues(data.norm$orig.ident, phe$orig.ident , phe$Tissue )
+data.norm$Tissue_source <- plyr::mapvalues(data.norm$orig.ident, phe$orig.ident , phe$Tissue_source )
+
+data.norm$Donor <- plyr::mapvalues(data.norm$orig.ident, phe$orig.ident , phe$Donor )
+data.norm$Patient <- plyr::mapvalues(data.norm$orig.ident, phe$orig.ident , phe$Patient )
+data.norm$Patient <- factor(data.norm$Patient , levels =  order.patient)
+data.norm$Sample <- plyr::mapvalues(data.norm$orig.ident, phe$orig.ident , phe$Sample )
+data.norm$Sample <- factor(data.norm$Sample , levels = order.sample)
+data.norm$Cancer_type <- plyr::mapvalues(data.norm$orig.ident, phe$orig.ident , phe$Cancer_type )
+data.norm$Sampling_time <- plyr::mapvalues(data.norm$orig.ident, phe$orig.ident , phe$Sampling_time )
+data.norm$Batch <- plyr::mapvalues(data.norm$orig.ident, phe$orig.ident , phe$Batch )
+
+
+```
+
+
+## Method1: by classic cell markers
+
+```{r markers, fig.width=8,fig.height=2.5}
+markers.pik3         <- c("PIK3CD", "PIK3CD-AS1",  "PIK3CD-AS2") # AS is a lnk RNA
+
+markers.mzl         <- c("KLF2", "NOTCH2",  "MKI67")
+markers.B           <- c("CD19","MS4A1","CD79A")
+markers.T            <- c("CD3D","CD3E","CD3G")
+markers.NK          <- c("XCL2", "NKG7", "GNLY")
+markers.Myeloid    <-c("CD68", "CD33","CST3")
+markers.Mono        <- c('LYZ', 'S100A9', 'FCN1')
+markers.DC         <- c("CD1C","FCER1","CLEC10A")
+#markers.pDC         <- c("NRP1","CLEC4C") # precursor DC
+markers.Eryth       <- c('HBQ1', 'HBM', 'GYPA')
+markers.mag         <- c('GATA2', 'FCER1A', 'GATA1')
+markers.Eryth.early <- c('APOC1', 'TESPA1', 'GATA2')
+markers.Eryth.late <- c('GYPA', 'GYPB', 'HBA1')
+markers.NMP <- c('LYZ', 'MPO', 'SERPINB1')
+markers.ELP <- c('FLT3', 'LTB', 'RUNX2') #early lymphoid progenitors??
+markers.T.sub            <- c("CD3E","CD4","CD8A")
+makrers.prolif    <- c('TOP2A', 'TU88', 'MKI67', 'UBE2C')
+
+# follicular 
+markers.fol.T <- c('PDCD1', 'ICOS', 'CXCR5')  # follicular helper T cells
+markers.fol.B <- c('CXCR5', 'TNFRSF13B', 'CD22') # follicular B cells
+markers.fol.DC <- c('CR1', 'CR2', 'FCGR2B') # follicular DC: CD35, CD21, CD32 #more: c("CXCL13","ITGAX")
+
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = makrers.prolif, ncol = 3,   order = T)
+
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.pik3, ncol = 3,   order = T)
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.mzl, ncol = 3,   order = T)
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.B, ncol = 3,   order = T)
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.T, ncol = 3,   order = T)
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.Myeloid, ncol = 3,   order = T)
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.mag, ncol = 3,   order = T)
+#FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = makrers.Eryth, ncol = 3,   order = T)
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.Mono, ncol = 3,   order = T)
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.NK, ncol = 3,   order = T)
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.NKsub, ncol = 3,   order = T)
+
+#FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.ELP, ncol = 3,   order = T)
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.T.sub, ncol = 3,   order = T)
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.macro, ncol = 3, raster = T) & NoLegend()
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features =makrers.epith, ncol = 3, raster = T) & NoLegend()
+
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.DC, ncol = 3,   order = T)
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.fol.T, ncol = 3,   order = T)
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.fol.B, ncol = 3,   order = T)
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.fol.DC, ncol = 3,   order = T)
+
+```
+
+```{r dim , fig.width=3.5,fig.height=3}
+
+DimPlot(data.norm, group.by = 'Sample', cols = col.sample, raster = F) 
+DimPlot(data.norm, group.by = 'SCT_snn_res.0.6', raster = F) 
+DimPlot(data.norm, group.by = 'SCT_snn_res.0.6', label = T , raster = F) 
+DimPlot(data.norm, group.by = 'VDJ', cols = color_tf) 
+
+```
+
+
+
+```{r Vlnplot,  fig.width=12}
+myfeatures <- c("CD3E", "CD4", "CD8A", "NKG7", "GNLY", "MS4A1", "CD19", 'CD79A',"CD14", "LYZ", "MS4A7", 
+    "FCGR3A", "CST3", "FCER1A", "CD68", "CD14", 'HBQ1', 'HBM', 'GYPA')
+
+#FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = myfeatures, ncol = 3,   order = T)
+VlnPlot(data.norm, features = myfeatures, ncol = 5, pt.size = 0)
+```
+
+
+
+Combine consideration of  the markers plot and cluster plot, we infer that:
+T.clusters <- c(3,5,11,13,23,26,29,30,31,32,34)
+B.clusters <- c(0,1,2,4,7,8,9,10,12,14,15,16,17,18,19,21,22, 25,27,28,36,38,39,40,41,24) #24 might be progenotor or pro-B preB cells
+Mo.clusters <- c(20,35,37,42)
+Uclear <- c(6). # 6 NK/T?
+
+Could double check with the automatic annotation
+
+```{r check doublets}
+VlnPlot(data.norm, features = c('nCount_RNA', 'nFeature_RNA'), ncol = 2, pt.size = 0) 
+# while 16 have not shown outlier of gene number of reads number
+
+table(data.norm$SCT_snn_res.0.6) 
+```
+
+
+
+
+```{r markers by samples,Could skip, fig.width=6,fig.height=6}
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.B, ncol = 3,   order = T, split.by = 'orig.ident')
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.T, ncol = 3,   order = T, split.by = 'orig.ident')
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.mcl, ncol = 3,   order = T, split.by = 'orig.ident')
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = makrers.Eryth, ncol = 3,   order = T, split.by = 'orig.ident')
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.Mono, ncol = 3,   order = T, split.by = 'orig.ident')
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.NK, ncol = 3,   order = T, split.by = 'orig.ident')
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = markers.Myelyoid, ncol = 3,   order = T, split.by = 'orig.ident',pt.size = 0.1)
+```
+
+
+
+```{r umap markers, Could skip}
+# define markers
+
+#isotype.genes     <- c('IGHM', "IGHD", "IGHG1", 'IGHG2', 'IGHG3', 'IGHG4', 'IGHA1', 'IGHA2')
+#myeloid.genes     <- c("LYZ","CD68","CD14","LAMP3","CLEC9A","IRF7")
+#caf.genes         <- c("COL1A1","COL3A1")
+
+cell.types <- c("B","T","NK", "Myeloid")
+
+rm(celltype.exp)
+celltype.exp <- cbind(colMeans(data.norm@assays$SCT@data[markers.B,]),
+                      colMeans(data.norm@assays$SCT@data[markers.T,]),
+                      #colMeans(data.norm@assays$SCT@data[markers.Mono,]),
+                      colMeans(data.norm@assays$SCT@data[markers.NK,]),
+                      #colMeans(data.norm@assays$SCT@data[markers.Eryth ,]),
+                      colMeans(data.norm@assays$SCT@data[markers.Myeloid,])
+                      )
+colnames(celltype.exp) <- cell.types  # same order
+
+# plot by expression 
+meta.multi_features <- cbind( celltype.exp, data.norm@reductions$umap@cell.embeddings)
+#meta.multi_features[,"CNVscore"] <- q.all$CNVscore
+plot_multiFeature_grad <- function( cell){
+   ggplot(as.data.frame(meta.multi_features), aes(x=UMAP_1, y=UMAP_2, color=get(cell))) + 
+   geom_point(size = 0.1) +
+   scale_color_gradient(low = "gray", high = "red") +
+   #scale_color_gradientn(colors = c("gray","gray","red","red","red")) +
+   labs(title = paste0(cell, ' (', str_c(get(paste0('markers.',cell)), collapse = ','), ')')) +
+   theme(panel.background = element_rect(fill = 'white', colour = 'black', size = 2),
+         plot.background = element_rect(fill = 'white'),
+         panel.grid.major = element_blank(),
+         panel.grid.minor = element_blank())
+  
+  ggsave(last_plot(),  filename =  paste0('plots/mark.', cell, '.expGradient.pdf'), w = 8, h = 8)
+ }
+mapply(plot_multiFeature_grad, cell.types)
+
+# plot by DImplot if exp > 1
+celltype.exp.binary <- celltype.exp
+celltype.exp.binary[celltype.exp >= 1] <- 'TRUE'
+celltype.exp.binary[celltype.exp < 1] <- 'FALSE'
+
+data.norm@meta.data <- data.norm@meta.data %>% cbind(celltype.exp.binary)
+
+plot_multiFeature <- function( cell){
+ # cell = 'B'
+  ggsave( DimPlot(data.norm, reduction = "umap", group.by = cell, repel = T, label = F, label.size = 7, ) + 
+          NoAxes() +  NoLegend()+  
+          labs(title = paste0(cell, ' (', str_c(get(paste0('markers.',cell)), collapse = ','), ')')) +
+           scale_color_manual(values = color_tf) +
+          theme(panel.background = element_rect(colour = 'black', size = 1)) ,
+        filename =  paste0('Allcells//mark.', cell, '.expMT1.png'), w = 6, h = 6)
+
+}
+
+mapply(plot_multiFeature, cell.types)
+
+```
+
+
+
+## Method2: Automatic annotation
+ScPred, Azimuth, Celltypist
+Not need to run all the methods in the all rough cell annotation, perhaps choose one is enough to double check the unclear one
+
+### Azimuth auto-annotation
+NOTE: *Azimuth reference (NO, because it is no Lymph node reference)*
+
+- load reference 
+```{r ref, fig.width=4, fig.height=3}
+# see available references
+available_data <- AvailableData()
+available_data[grep("Azimuth", available_data[, 3]), 1:3]
+
+# The RunAzimuth function can take a Seurat object as input
+#bm <- RunAzimuth(data.norm, reference = "bonemarrowref")
+# if above download failed, then we manully download it to our ref/
+# wget http://seurat.nygenome.org/src/contrib/bonemarrowref.SeuratData_1.0.0.tar.gz ; tar -zxvf bonemarrowref.SeuratData_1.0.0.tar.gz 
+data.norm <- RunAzimuth(data.norm, reference = "./bonemarrowref.SeuratData/inst/azimuth/")
+ #data.norm <- RunAzimuth(data.norm, reference = "bonemarrowref") 
+
+p1 <- DimPlot(data.norm, group.by = "predicted.celltype.l1", reduction = my.reduction, label = TRUE, label.size = 3,raster=FALSE) 
+p2 <- DimPlot(data.norm, group.by = "predicted.celltype.l2", reduction = my.reduction, label = TRUE, label.size = 3,raster=FALSE) + NoLegend()
+p3 <- DimPlot(data.norm, group.by = "orig.ident", reduction = my.reduction)
+#p3 <- DimPlot(data.norm, group.by = "predicted.ann_finest_level", reduction = 'umap', label = TRUE, label.size = 3)  # lung
+p2 + p3 + p1
+p3
+p2 + p3
+```
+
+
+
+```{r cell type statistic}
+predicted = table(data.norm$orig.ident,data.norm$predicted.celltype.l1) %>% as.data.frame() %>% spread(Var1, Freq)
+predicted.l2 = table(data.norm$orig.ident,data.norm$predicted.celltype.l2) %>% as.data.frame() %>% spread(Var1, Freq)
+```
+
+ 
+
+
+```{r celltype2cluster bar, fig.width=4, fig.height=2}
+#Now plot how many cells of each celltypes can be found in each cluster.
+ggplot(data.norm@meta.data, 
+       aes(
+         x = SCT_snn_res.0.6,
+           fill = predicted.celltype.l1)) + 
+  geom_bar() + theme_classic() + 
+  scale_fill_discrete(type = paletteer::paletteer_d("ggsci::default_igv", n = length(unique(data.norm$predicted.celltype.l1)))) 
+  
+
+# unclear cluster to check the level2
+ggplot(data.norm@meta.data %>% filter(SCT_snn_res.0.6 %in% c(6,24,25,27,20,35,37,42)), 
+       aes(
+         x = SCT_snn_res.0.6,
+           fill = predicted.celltype.l2)) + 
+  geom_bar() + theme_classic() + 
+  scale_fill_discrete(type = paletteer::paletteer_d("ggsci::default_igv", n = length(unique(data.norm$predicted.celltype.l2)))) 
+
+temp.annot = data.norm@meta.data  %>% select(SCT_snn_res.0.6, predicted.celltype.l2) %>% table() %>% as.data.frame() %>% 
+  spread(SCT_snn_res.0.6, Freq) %>% 
+  select(predicted.celltype.l2, one_of(as.character(c( 6,24,25,27,20,35,37,42) ) ))
+
+
+```
+
+
+- Use it to double check our maually annotation correct
+
+T.clusters <- c(0,1,2,4, 11,13,23,26,29,30,31,32,34)
+B.clusters <- c(3,5,7,8,9,10,12,14,15,16,17,18,19,21,22, 28,33,36,38,39,40,41, 24,25,27)
+Mono.clusters <- c(20,37,42)
+DC.cLusters <- c(35)
+NK.clusters <- c(6) 
+
+
+```{r mannual correction, fig.width=4, fig.height=3}
+T.clusters <- c(0,1,2,4, 11,13,23,26,29,30,31,32,34)
+B.clusters <- c(3,5,7,8,9,10,12,14,15,16,17,18,19,21,22, 28,33,36,38,39,40,41, 24,25,27)
+Malignant.B <- c(3, 19, 16, 14, 9, 22, 41, 7, 5, 10, 8, 12, 17, 21)
+Mono.clusters <- c(20,37,42)
+DC.clusters <- c(35)
+NK.clusters <- c(6) 
+
+# SCT_snn_res.0.5
+cell.types <- data.frame(cellcluster = 0: (length(levels(data.norm$SCT_snn_res.0.6))-1)) %>% 
+  mutate( celltype_manu = if_else(cellcluster %in% T.clusters, 'T', 
+                               if_else(cellcluster %in% B.clusters, 'B',
+                                       if_else(cellcluster %in% c(Mono.clusters, DC.clusters), 'Myeloid', 
+                                               if_else(cellcluster %in% NK.clusters, 'NK', 'Others'))))) %>% 
+  mutate(celltype_manu =  if_else(cellcluster %in% Malignant.B, 'Malignant',celltype_manu ))
+         
+data.norm$celltype_manu <- plyr::mapvalues(data.norm@active.ident, cell.types$cellcluster , cell.types$celltype_manu )
+
+# manually annotate some cells form the mixed cluster --- 
+# cluster 6: 20% T in NK cluster 
+cell.T.c6 = data.norm@meta.data %>% filter(SCT_snn_res.0.6 %in% c(6), grepl('CD8', predicted.celltype.l2) ) %>% pull(CellBarcode) 
+
+# cluster 11 and 13 has some NK
+cell.NK.c11.c13 = data.norm@meta.data %>% filter(SCT_snn_res.0.6 %in% c(11,13), grepl('NK', predicted.celltype.l2) ) %>% pull(CellBarcode) 
+
+# mixture cluster 24: Erythcyto
+data.norm@meta.data %>% filter(SCT_snn_res.0.6 %in% c(24)) %>% pull(predicted.celltype.l2) %>% table()
+cell.Eryth.c24 = data.norm@meta.data %>% filter(SCT_snn_res.0.6 %in% c(24), grepl('Eryth', predicted.celltype.l2) ) %>% pull(CellBarcode) 
+cell.HSC.c24 = data.norm@meta.data %>% filter(SCT_snn_res.0.6 %in% c(24), grepl('HSC', predicted.celltype.l2) ) %>% pull(CellBarcode) 
+cell.LMPP.c24 = data.norm@meta.data %>% filter(SCT_snn_res.0.6 %in% c(24), grepl('LMPP', predicted.celltype.l2) ) %>% pull(CellBarcode) 
+cell.B.c24 = data.norm@meta.data %>% filter(SCT_snn_res.0.6 %in% c(24), grepl('B$', predicted.celltype.l2) ) %>% pull(CellBarcode) 
+
+
+data.norm$celltype_manu <- if_else(data.norm$SCT_snn_res.0.6 %in% c(6) & data.norm$CellBarcode %in%  cell.T.c6, 'T',
+                                   if_else(data.norm$SCT_snn_res.0.6 %in% c(11,13) & data.norm$CellBarcode %in%  cell.NK.c11.c13, 'NK',
+                                           if_else(data.norm$SCT_snn_res.0.6 %in% c(24), 
+                                                   if_else(data.norm$CellBarcode %in% cell.Eryth.c24, 'Eryth',
+                                                           if_else(data.norm$CellBarcode %in% cell.HSC.c24, 'HSC', 
+                                                                   if_else(data.norm$CellBarcode %in% cell.LMPP.c24, 'LMPP', 
+                                                                           if_else(data.norm$CellBarcode %in% cell.B.c24, 'B', 'Others')))),data.norm$celltype_manu)))
+
+
+DimPlot(data.norm, group.by = "celltype_manu", reduction = 'umap' , label = TRUE, label.size = 3 ,raster=FALSE) + scale_color_manual(values = col.cell_major)
+DimPlot(data.norm, group.by = sel.clust, reduction = 'umap' , label = TRUE, label.size = 3, raster=FALSE) 
+```
+
+
+T.clusters <- c(0,1,2,4, 11,13,23,26,29,30,31,32,34)
+B.clusters <- c(3,5,7,8,9,10,12,14,15,16,17,18,19,21,22, 28,33,36,38,39,40,41, 24,25,27)
+Mono.clusters <- c(20,37,42)
+DC.cLusters <- c(35)
+NK.clusters <- c(6) 
+
+
+
+### CellTypist   (NOT RUN here for the major cell annotation)
+https://www.celltypist.org/ 
+```{r celltypist ,fig.width=8, fig.height=6}
+write.table(as.matrix(GetAssayData(object = data.norm, slot = "counts", assay = 'SCT')), 
+            "results/SCTcount.forCellTypist.csv", 
+            sep = ',', row.names = T, col.names = T, quote = F)
+
+annot_pl = read_csv(gzfile('results/predicted_labels/predicted_labels.csv'))
+table(annot_pl$predicted_labels)
+table(annot_pl$majority_voting)
+
+data.norm@meta.data = data.norm@meta.data %>% mutate(`...1` = rownames(data.norm@meta.data)) %>%
+  left_join(annot_pl) %>% column_to_rownames(`...1`)   
+
+DimPlot(data.norm, group.by = "majority_voting", reduction = my.reduction , label = TRUE, label.size = 3 ) 
+predicted.celltypist = table(data.norm$orig.ident,data.norm$majority_voting) %>% as.data.frame() %>% spread(Var1, Freq)
+predicted.celltypist.raw = table(data.norm$orig.ident, data.norm$predicted_labels) %>% as.data.frame() %>% spread(Var1, Freq)
+
+```
+
+
+
+
+```{r celltypist, celltype2cluster bar}
+#Now plot how many cells of each celltypes can be found in each cluster.
+ggplot(data.norm@meta.data, 
+       aes(x = SCT_snn_res.0.6, fill = majority_voting)) + 
+  geom_bar() + theme_classic() + 
+  scale_fill_discrete(type = paletteer::paletteer_d("ggsci::default_igv", n = length(unique(data.norm$predicted.celltype.l2)))) 
+  
+```
+
+
+
+## infer malignant cells by IGK/IGL chain
+To further distinguish malignant from non-malignant B cells,
+we leveraged the fact that malignant B-cell populations express only one type of immunoglobulin light chain—that is, either a κ or λ light chain. We calculated the light chain ratio (κ/λ) for
+each B cell based on the scRNA expression of the genes IGKC (coding for the constant part of the κ light chain) and IGLC2 (λ light chain) and colour-coded this ratio in a t-distributed sto- chastic neighbour-embedding (t-SNE) plot 
+
+```{r ig k/r ratio}
+
+VlnPlot(data.norm, features = c('IGKC', 'IGLC2' ), pt.size = 0, ncol = 1, group.by = sel.clust ) + NoLegend()
+
+df.igl = data.norm@meta.data %>% select(CellBarcode, Sample, SCT_snn_res.0.6, celltype_manu)
+df.igl$igk = as.vector(data.norm@assays$RNA['IGKC',]) 
+#df.igl$igl = as.vector(data.norm@assays$RNA['IGLC2',])  # some tumor express IGLC1 and IGLC3, so only C2 will miss 
+df.igl$igl = apply(data.norm@assays$RNA[str_c('IGLC', 1:7),], 2, max) 
+
+df.igl = df.igl %>% mutate(igl_ratio =  if_else(!celltype_manu %in% c('B', 'Malignant'), -1, 
+                                                (if_else(igk + igl == 0, -1, 
+                                               if_else(igk == 0 & igl !=0, 0, 
+                                                       if_else(igk !=0 & igl ==0, 1, (igk)/(igk + igl)))))))
+write_tsv(df.igl, 'BCR/IgK_L.ratio.cell.tsv')
+
+data.norm$igl_kl_ratio = ifelse(df.igl$igl_ratio == -1, NA, df.igl$igl_ratio)
+
+FeaturePlot(data.norm, features  = "igl_kl_ratio", repel = T, 
+                     #cols =  c(  "blue", "white","red"),  blend.threshold = 1,
+                     raster = F,
+                    label = F, label.size = 7) + NoAxes()  +  
+         scale_colour_gradientn(colours = rev(brewer.pal(n = 11, name = "RdYlBu"))) + 
+          #scale_color_manual(values = color_clone1) + 
+          labs(title = paste0('by IGK/IKL ratio') )
+
+# how many have ration & B cell number
+sum(data.norm$celltype_manu %in% c('B', "Malignant")) # 66082
+sum(!is.na(df.igl$igl_ratio ))
+
+
+gv.nonB <- ggviolin(df.igl %>% filter(!SCT_snn_res.0.6 %in% B.clusters), x = 'SCT_snn_res.0.6', y = 'igl_ratio' , 
+         #ylim = c(0,1), 
+         fill = 'SCT_snn_res.0.6' ) + NoLegend()
+
+gv <- ggviolin(df.igl  %>% filter(SCT_snn_res.0.6 %in% B.clusters) , ylim = c(0,1),
+               x =  "SCT_snn_res.0.6", y = "igl_ratio",  xlab = 'Cluster', ylab= 'igk/igl ratio',
+               fill =  "celltype_manu", palette = col.cell_major[c('B', 'Malignant')])
+
+gv_sample <- ggviolin(df.igl  %>% filter(SCT_snn_res.0.6 %in% B.clusters) , ylim = c(0,1),
+               x =  "Sample", y = "igl_ratio",  xlab = 'Cluster', ylab= 'igk/igl ratio', x.text.angle = 90,
+               fill =  "Sample", palette =  col.sample) + NoLegend()
+
+
+topptx(gv, filename =  outfile, append = T, title = 'IgK/IgL ratio - Cluster', w = 10, h = 4)
+topptx(gv_sample, filename =  outfile, append = T, title = 'IgK/IgL ratio - Sample', w = 8, h = 4)
+
+ggsave(gv, file = 'BCR/igk_igl_ratio.violine.pdf', w = 8, h = 4)
+ggsave(gv.nonB, file = 'BCR/igk_igl_ratio.violine.nonB.pdf', w = 8, h = 4)
+
+gs <- ggstripchart(df.igl %>% filter(SCT_snn_res.0.6 %in% B.clusters), x = 'SCT_snn_res.0.6', y = 'igl_ratio' , ylim = c(0,1), color = 'igl_ratio' ) + NoLegend() +
+  
+gb <- ggboxplot(df.igl %>% filter(SCT_snn_res.0.6 %in% B.clusters), x = 'SCT_snn_res.0.6', y = 'igl_ratio' , ylim = c(0,1), color = 'igl_ratio', outlier.shape = NA ) + NoLegend()  
+ggboxplot(df.igl %>% filter(SCT_snn_res.0.6 %in% Malignant.B), x = 'SCT_snn_res.0.6', y = 'igl_ratio' , ylim = c(0,1), color = 'igl_ratio', outlier.shape = NA ) + NoLegend() 
+
+```
+
+
+
+
+# 3.BCR annotation
+ 
+## firstly  check major clones
+
+```{r V gene usage}
+# Compare the usage of different V and J genes
+ggs <- plot_gene_usage(
+  input       = data.norm,                       # Seurat object
+  gene_cols   = c("v_gene", "j_gene"),        # Column(s) containing V(D)J genes to plot
+  cluster_col = "orig.ident",                 # Column containing cell clusters to compare
+  chain       = "IGH"                         # Chain to plot
+)
+
+cowplot::plot_grid(plotlist = ggs)
+
+
+clones = calc_gene_usage(
+  input       = data.norm,
+  gene_cols   = c("v_gene", "j_gene","cdr3"),                   # Column containing genes
+  cluster_col = "orig.ident",                    # Column containing cell clusters to compare
+  chain       = "IGH",                      # Chain to calculate gene usage for
+  chain_col   = "chains"                    # Column containing chains
+)
+
+
+
+plot_clonal_abundance(
+  input       = data.norm,
+  cluster_col = "orig.ident",                   # Column containing cell clusters to compare
+  n_clones    = 10,                        # Number of top clonotypes to plot
+  type        = "bar"                    # Type of plot, 'bar' or 'line'
+)
+
+```
+
+
+## Check the non-B cells with BCR
+is doublets? If no, remove the BCR or correct the cell annotation
+
+```{r non-B with BCR, fig.width=8, fig.height=2}
+data.norm@meta.data %>% filter(VDJ == 'TRUE') %>% pull(celltype_manu) %>% table() # cell type have bcr barcode
+#data.norm@meta.data %>% filter(VDJ == 'FALSE') %>% pull(celltype_manu) %>% table() # cell type have no bcr barcode
+
+
+# **Before run belowing command , grep the non-Bcells with bcr barcodes plot the markers**
+sup.b <- data.norm[, data.norm$VDJ == 'TRUE' & !grepl('B', data.norm$celltype_manu) & data.norm$celltype_manu != 'Malignant' ]
+
+FeaturePlot(sup.b, reduction = "umap", dims = 1:2, 
+            features = c(markers.B, markers.T), 
+            ncol = 6,   order = T) & NoLegend() 
+
+DimPlot(sup.b, group.by = "celltype_manu", reduction = 'umap' ) +
+  DimPlot(sup.b, group.by = 'orig.ident', reduction = 'umap') + 
+  DimPlot(sup.b,group.by = 'VDJ', reduction = 'umap')
+
+data.norm$VDJ_manu = if_else(data.norm$CellBarcode %in% sup.b$CellBarcode, 'FALSE',  as.character(data.norm$VDJ))
+
+data.norm$Isotype = str_remove_all(data.norm$c_gene, ';.*')
+```
+
+Remove the VDJ from the non-B cells
+
+
+
+
+## add SHM
+### SHM
+
+```{sh}
+
+# input: filtered_contig.fasta
+# need internal_data directory in current working path
+# run: WSL workshop
+ for i in `ls | cut -f 1 -d '.' -`; do 
+    /mnt/e/huiwan/software/ncbi-igblast-1.16.0/bin/igblastn \
+     -germline_db_V  /mnt/e/huiwan/software/ncbi-igblast-1.16.0/database/human_germline/human_GL_V \
+     -germline_db_J  /mnt/e/huiwan/software/ncbi-igblast-1.16.0/database/human_germline/human_GL_J \
+     -germline_db_D  /mnt/e/huiwan/software/ncbi-igblast-1.16.0/database/human_germline/human_GL_D \
+     -auxiliary_data /mnt/e/huiwan/software/ncbi-igblast-1.16.0/optional_file/human_gl.aux \
+     -query ${i}.filtered_contig.fasta \
+     -outfmt 19 \
+     -organism human -domain_system imgt -ig_seqtype Ig \
+     -num_threads 8 > igblast.${i}.txt;
+ done
+ 
+# output: igblast.txt
+```
+
+
+
+```{r read shm}
+library(alakazam)
+library(shazam)
+library(djvdj)
+
+
+cal_shm <- function(sample, dir.shm, dir.bcr) {
+  # sample = 'MC3D_BM'
+  # dir.shm = 'SHM/'
+  # dir.bcr = 'cellranger/'
+  print(sample)
+  
+  df.igblast = read_tsv(paste0(dir.shm, '/igblast.', sample, '.txt'), col_names = T)
+  #df.bcr = read.csv(paste0(dir.bcr, sample, '/outs/per_sample_outs/', ... =   sample,'/vdj_b/filtered_contig_annotations.csv'))
+  df.bcr = read.csv(paste0(dir.bcr, sample, '/vdj_b/filtered_contig_annotations.csv')) # MC3
+
+  df.v_shm.freq <- observedMutations(df.igblast, sequenceColumn="sequence_alignment",
+                                germlineColumn="germline_alignment",
+                                regionDefinition=IMGT_V_BY_SEGMENTS, 
+                                combine=TRUE, 
+                                frequency=T,
+                                nproc=1) %>%
+      select(contig_id = sequence_id, v_shm = mu_freq  )  %>% mutate(v_shm = v_shm * 100)
+  
+  df.v_shm.uniq = df.bcr %>% left_join(df.v_shm.freq) %>%  
+      mutate(chain = if_else(chain == 'IGH', 'SHM_VH', 'SHM_VL')) %>% 
+      group_by(barcode, chain) %>%
+      top_n(1, umis) %>%  
+      top_n(1, reads) %>%  
+      select(barcode, chain, v_shm) %>% 
+      ungroup() %>%
+      spread(chain, v_shm) %>% 
+      #mutate(CellBarcode = str_c(phe$Sample[phe$orig.ident == sample], '_', barcode)) 
+      mutate(CellBarcode = str_c(sample, '_', barcode),
+             Sample = str_c(phe$Sample[phe$orig.ident == sample])) 
+
+  return(df.v_shm.uniq)
+
+} 
+
+# read & calculate shm
+
+df.v_shm.1 <- map_df(.f = cal_shm, .x = phe %>% filter(Cancer_type == "MCL", !Donor %in% c("MC3", "MC201")) %>% pull(orig.ident)  , dir.shm = 'SHM/', dir.bcr = 'cellranger/' )
+
+df.v_shm.2 <- map_df(.f = cal_shm, .x = phe %>% filter( Donor =="MC3") %>% pull(orig.ident) , dir.shm = 'SHM/', dir.bcr = 'cellranger/'  ) # change dir path in function
+
+df.v_shm = df.v_shm.1 %>% bind_rows(df.v_shm.2)
+
+write_tsv(df.v_shm, 'SHM/all_tumor_sample.SHM.tsv')
+
+
+
+```
+
+
+
+
+```{r add shm}
+p.shm = read_tsv('SHM/all_tumor_sample.SHM.tsv')   %>% filter(Sample %in% order.sample)
+data.norm@meta.data = data.norm@meta.data %>% left_join(p.shm %>% select(CellBarcode, SHM_VH, SHM_VL))
+
+rownames(data.norm@meta.data) = data.norm$CellBarcode  
+
+FeaturePlot(data.norm, features = 'SHM_VH',raster = T)
+
+
+
+
+```
+
+
+```{r  plot SHM  fig.height=1.2, fig.width=2.5}
+
+# barplot
+pb_shm <- ggbarplot(data.norm@meta.data %>% 
+                      filter(Cancer_type == 'MCL') %>% 
+                      mutate(Sample = factor(Sample, levels = order.sample)) ,
+             x = 'Sample', y = 'SHM_VH',  
+           fill = 'Sample', palette = col.sample,
+           x.text.angle = 90, 
+           sort.val = "asc",
+            add = "median_mad") + rremove('legend')  + rremove('xlab')
+
+ggsave(pb_shm, file = '~/OneDrive - Karolinska Institutet/Mac/Project/MCL_scRNAseq/202306_batch3/SHM/sample.vh_shm.pdf', w = 5, h = 3)
+topptx(pb_shm, filename = outfile, title = 'SHM clone', append = T, h = 3, w = 6)
+
+# stat table
+df_shm_sample = data.norm@meta.data  %>%  filter(Cancer_type == 'MCL') %>% 
+  select(Sample , SHM_VH, SHM_VL) %>% 
+  group_by(Sample) %>% 
+  summarise(VH_SHM_median = round(median(SHM_VH, na.rm = T), 2),
+            VL_SHM_median = round(median(SHM_VL, na.rm = T), 2) )
+write_tsv(df_shm_sample, '~/OneDrive - Karolinska Institutet/Mac/Project/MCL_scRNAseq/202306_batch3/SHM/sample.SHM.xls')
+
+# dotplot
+ggstripchart(data.norm@meta.data %>% mutate(Sample = factor(Sample, levels = order.sample)), 
+             x = 'Sample', y = 'SHM_VH', 
+             #facet.by = 'orig.ident', 
+             add = "median", add.params = list(color = 'black', shape = 95 , linetype = 2),
+             error.plot = "crossbar", 
+             color  = 'Sample', palette = col.sample) + 
+  #coord_cartesian(ylim = c(0.06, 0.08)) +
+  NoLegend()
+
+ggsave(last_plot(), file = 'q.mb.cells/boxplot.SHM.cluster.pdf', w = 5, h = 3)
+
+
+```
+
+
+```{r add dominant clone, fig.height=1.2, fig.width=2.5}
+clones = data.all@meta.data %>% filter(VDJ_manu == TRUE) %>% 
+  group_by(Sample, cdr3, v_gene, j_gene, isotype) %>% summarise(freq = n()) %>%
+  ungroup() %>% group_by(Sample) %>% mutate(Total_clone = sum(freq), percent = freq/Total_clone * 100) %>% 
+  ungroup() %>%  
+  group_by(cdr3, v_gene, j_gene )  %>% arrange(-percent)  %>% mutate(clone_id = cur_group_id()) 
+
+head(clones)  
+
+clone.dominant = clones %>% filter(percent > 5) %>% mutate(domaint = 'Dominant')
+
+write_tsv(clones %>% left_join(clone.dominant), paste('q.mb.cells/VDJ.clones.tsv'))
+
+# barplot dominant percentage
+pb_dominant <- ggbarplot(clone.dominant %>% mutate(Sample = factor(Sample, levels = order.sample)) , 
+                         x = 'Sample', y = 'percent',  
+           fill = 'Sample', palette = col.sample,
+           x.text.angle = 90) + rremove('legend') + rremove('xlab')
+
+topptx(pb_dominant, filename = outfile, title = 'v_gene', append = T, h = 3, w = 6)
+
+# q.p@meta.data = q.p@meta.data  %>% left_join(clone.dominant) %>% 
+#   mutate( domaintClone =  if_else(VDJ == TRUE, 
+#                                   if_else( !is.na(domaint) , 'Dominant', 'Minor') , 'NA'))
+# 
+# rownames(q.p@meta.data) = colnames(q.p@assays$RNA)
+```
+
+## Add BCR information 
+```{r dominat clones, fig.width=8, fig.height=2}
+
+clones = q.p@meta.data %>% filter(VDJ_manu == TRUE) %>% 
+  group_by(Sample, cdr3, v_gene, j_gene, isotype) %>% summarise(freq = n()) %>%
+  ungroup() %>% group_by(Sample) %>% mutate(Total_clone = sum(freq), percent = freq/Total_clone * 100) %>% 
+  ungroup() %>%  
+  group_by(cdr3, v_gene, j_gene )  %>% arrange(-percent)  %>% mutate(clone_id = cur_group_id()) 
+
+head(clones)  
+
+clone.dominant = clones %>% filter(percent > 60) %>% mutate(domaint = 'Dominant')
+
+write_tsv(clones, paste(mydir,'VDJ.clones.tsv'))
+
+q.p@meta.data = q.p@meta.data  %>% left_join(clone.dominant) %>% 
+  mutate( domaintClone =  if_else(VDJ == TRUE, 
+                                  if_else( !is.na(domaint) , 'Dominant', 'Minor') , 'NA'))
+
+rownames(q.p@meta.data) = colnames(q.p@assays$RNA)
+
+# barplot
+ggbarplot(clones %>% mutate(clone_id = str_c('clone',clone_id)) %>% group_by(Sample) %>% slice_max(order_by = percent, n = 5), 
+          x = 'v_gene', y = 'percent', fill = 'clone_id', facet.by = 'Sample', scale = 'free_x',  x.text.angle = 30, nrow = 1,
+          palette = vars(paletteer_d("tidyquant::tq_dark") )) + NoLegend()
+
+eoffice::topptx(last_plot()  , filename = outfile, append = T, width = 6, height = 4, title = paste0(' Clonotype abundance'))
+
+# stat
+stat.BCRclone = q.p@meta.data  %>% filter(!is.na(domaintClone), domaintClone != 'NA') %>% group_by(Sample, domaintClone) %>%
+  summarise(n = n()) %>% spread(domaintClone, n, fill=0) %>% 
+  mutate(matched_BCR = sum(Dominant, Minor, na.rm =T), 
+         Dominat_pct = round(Dominant/matched_BCR * 100,2) )
+
+
+stat.Bcells = data.filt@meta.data %>% group_by(orig.ident, celltype_manu) %>% summarise(n = n()) %>% spread(celltype_manu, n, fill=0) 
+
+eoffice::totable(stat.BCRclone %>% left_join(stat.Bcells) %>% as.data.frame(),     filename = outfile, append = T)
+
+table(data.filt@meta.data$orig.ident)
+table(data.filt@meta.data$orig.ident, data.filt@meta.data$celltype_manu)
+
+```
+
+
+
+
+```{r dim isotype, fig.width=8,fig.height=2}
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = isotype_list, ncol = 3,   order = T)
+FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = c('VH_SHM', 'VL_SHM'), ncol = 2ß,   order = T)
+DimPlot(data.norm, group.by = 'Sample') + 
+DimPlot(data.norm, group.by = 'domaintClone', cols = color_clone1) + 
+DimPlot(data.norm, group.by = 'Isotype', cols = col_isotype)
+```
+
+
+
+
+
+```{r save }
+saveRDS(data.norm, 'Matrix/03_data_cellannot_BCRfilt.rds' )  # could  save later
+```
+
+
+
+
+
+
+
+# InferCNV
+
+## prepare the input of inferCNV
+
+```{r manually +  Azmuith annot}
+T.clusters <- c(0,1,2,4, 11,13,23,26,29,30,31,32,34)
+B.clusters <- c(3,5,7,8,9,10,12,14,15,16,17,18,19,21,22, 28,33,36,38,39,40,41, 24,25,27)
+Mono.clusters <- c(20,37,42)
+DC.cLusters <- c(35)
+NK.clusters <- c(6) 
+
+```
+
+
+
+```{r inferCNV: prepare inputdata Only B }
+
+q.b <- subset(data.norm, SCT_snn_res.0.6 %in% B.clusters ) 
+
+#1. Raw Counts Matrix for Genes x Cells
+counts_matrix = GetAssayData(q.b, array = 'RNA', slot="counts")
+
+#2. sample/cell annotation:  two columns: cell name + cell type annotation (normal/malignant) and there is no column header.
+annotations_file = q.b@meta.data %>% select(Celltype =  Cancer_type , Sample ) %>% 
+  mutate(Celltype = if_else(Celltype == 'Health', 'Health', Sample))
+table(annotations_file$Celltype)
+write_tsv(annotations_file %>% rownames_to_column('CellBarcode'),'infercnv/input/Bcells.cell_annotation.txt', col_names = F )
+
+# 3. Gene ordering file: downlaod from https://data.broadinstitute.org/Trinity/CTAT/cnv/hg38_gencode_v27.txt
+gene_order_file = read_tsv('~/OneDrive - Karolinska Institutet/Mac/Project/MCL_scRNAseq/_ref/hg38_gencode_v27.txt', col_names = F) %>% 
+  column_to_rownames('X1')
+
+library(infercnv)
+
+infercnv_obj = CreateInfercnvObject(raw_counts_matrix=counts_matrix,
+                                    annotations_file= annotations_file,
+                                    gene_order_file=gene_order_file,
+                                    ref_group_names=c('Health'))
+
+save(infercnv_obj, file =  "infercnv/input/Bcells.Robj")
+
+```
+
+
+
+
+## run inferCNV  (100,000 cost 4 days)
+There is two model: one is fast way that not run HMM , another is urn HMM to get the more precise CNV information, suggests to run both
+Run on Uppmax: /proj/snic2020-6-100/private/scRNA/MCL_/MCL_workplace/infercnv
+
+
+## get the maglinant annotation from inferCNV output
+- method1: according to modified expression in the output heatmap of InferCNV, choose exp<0.95 as loss and exp>1.05 as gain, then sum the change 
+- method2: calculate CNVscore for each cell by 1. re-scale to c(-1,1) and then quadratic sum : ref from https://www.nature.com/articles/s41422-019-0195-y/figures/2
+
+- infercnv output
+Copy the results named: 
+1. infercnv.preliminary.png : the preliminary inferCNV view (prior to denoising or HMM prediction)
+2. infercnv.png : the final heatmap generated by inferCNV with denoising methods applied.
+3. infercnv.references.txt : the 'normal' cell matrix data values. (NOT need)
+4. infercnv.observations.txt : the tumor cell matrix data values  (NOT need)
+5. infercnv.observation_groupings.txt : group memberships for the tumor cells as clustered.
+6. infercnv.observations_dendrogram.txt : the newick formatted dendrogram for the tumor cells that matches the heatmap.
+7. run.final.infercnv_obj
+8. infercnv.heatmap_thresholds.txt:  The color bar of expr in the heatmap
+
+
+
+```{r load and check}
+# seruat object ----
+
+
+# infercnv object ---
+infercnv_obj = readRDS('infercnv/run.final.infercnv_obj')
+plot_cnv(infercnv_obj, ref_title = "Healthy (B cell)", obs_title = "Patient (B cell)", out_dir = 'infercnv/',
+          png_res = 900, output_filename = 'heatmap_CNV.png', output_format = 'png')
+
+# cell annotation ---
+annotations_cell = read_tsv('infercnv/input/Bcells.cell_annotation.txt', col_names = c('CellBarcode', 'Celltype', 'Sample')) 
+
+
+table(annotations_cell$Celltype)
+
+# check ---
+sample.ref = data.frame(CellBarcode = colnames(infercnv_obj@count.data)[unlist(infercnv_obj@reference_grouped_cell_indices)], infercnv_input = 'Ref') %>% left_join(annotations_cell)
+table(sample.ref$Celltype) # if cell type is not equal between oject and annotation, then there is problem that include observation , infercnv perhaps need input the same cell order in count matrix and cell annotation
+
+sample.obs = data.frame(CellBarcode = colnames(infercnv_obj@expr.data)[unlist(infercnv_obj@observation_grouped_cell_indices)], infercnv_input = 'Obs') %>% left_join(annotations_cell)
+table(sample.obs$Celltype) # there is problem that include observation , infercnv perhaps need input the same cell order in count matrix and cell annotation
+
+```
+
+
+
+```{r plot CNV}
+getwd()
+infercnv_obj = readRDS('infercnv/20_HMM_pred.repr_intensitiesHMMi6.hmm_mode-samples.Pnorm_0.5.infercnv_obj')
+
+plot_cnv(infercnv_obj, ref_title = "Healthy (B cell)", obs_title = "Patient (B cell)", out_dir = 'infercnv/',
+          png_res = 900, output_filename = 'heatmap_CNV.HMM.png', output_format = 'png')
+```
+
+
+
+
+
+
+```{r CNV score}
+
+#cnv.exp.scale = apply(cnv.exp, 2, function(x) scales::rescale(x , to = c(-1, 1)) ) 
+df.cnv = as.data.frame(infercnv_obj@expr.data)
+colnames(df.cnv) = colnames(infercnv_obj@expr.data)
+rownames(df.cnv ) = rownames(infercnv_obj@expr.data)
+
+cnv.score = df.cnv %>% rownames_to_column('Gene') %>% 
+  gather(CellBarcode, cnv_denoise, -Gene) %>% 
+  group_by(CellBarcode) %>% 
+  mutate(cnv = if_else(cnv_denoise <= 0.95, -1, if_else(cnv_denoise >= 1.05, 1, 0)), # method1
+         #cnv_scale = scales::rescale(cnv_denoise , to = c(-1, 1)) # vector memory exhausted (limit reached?)
+         ) %>% # method2
+  summarise(CNVscore.1 = sum(abs(cnv))
+            #,
+           # CNVscore.2 = sum(cnv_scale^2), 
+            #CNVscore.3 = sum(abs(cnv_scale))
+            )  
+
+
+#write_tsv(cnv.score, 'infercnv/results/6.Bcells.CNVscore.tsv')
+```
+
+
+
+
+- get the tree
+```{r  cell hclust}
+
+library(TreeTools)
+#trees <- phytools::read.newick('infercnv/results/6.Bcells.infercnv.observations_dendrogram.txt')
+trees <- phytools::read.newick('infercnv/infercnv.observations_dendrogram.txt')
+
+cut_tree <- function(tree, k=3) {
+  # tree = trees[[3]]
+  # k = 3
+  cells = TipLabels(tree)
+  subtree = cutree(as.hclust(tree), k = k)
+  return(data.frame(CellBarcode = cells, Subcluster = subtree))
+}
+
+#  cnv score and cluster , if there is clear CNV in observe, then do not run 
+# if the samples could have same k of cut tree, if not then go to next session
+cell.cnv = map_df(trees, cut_tree, k = 3)  %>%  # while the two samples get different clusters, so need to combine sepereatly
+  mutate(cellorder = row_number())  %>%
+  left_join(annotations_cell) %>%
+  left_join(cnv.score)  %>% # noraml cell was not merge
+  #mutate(CNV_cluster =  str_c('CNV_', Subcluster))
+  mutate(CNV_cluster =  Sample)
+
+# no subcluster
+cell.cnv =  data.frame(CellBarcode = trees$tip.label) %>% 
+  mutate(cellorder = row_number())  %>%
+  left_join(annotations_cell) %>%
+  left_join(cnv.score)  %>% # noraml cell was not merge
+  #mutate(CNV_cluster =  str_c('CNV_', Subcluster))
+  mutate(CNV_cluster =  Sample)
+
+table(cell.cnv$Celltype) # double check with the infercnv input and output
+
+# obs + ref
+cell.cnv.all = annotations_cell %>% right_join(cnv.score) %>% 
+  left_join(cell.cnv %>% select(CellBarcode , CNV_cluster , cellorder)) %>% 
+  mutate(CNV_cluster = if_else(is.na(CNV_cluster), 'Reference' ,CNV_cluster )) 
+
+write_tsv(cell.cnv.all, 'infercnv/cell.CNVscore.tsv')
+
+
+```
+
+
+
+- CNV score comparsion
+
+We saw there is three CNV patterns in each sample, thus we'd like to see relationship of subclusters from each sample 
+```{r fig.width=8, fig.height=3}
+# brewer.pal(n = 8, name = "Set2")[c(2,3,6, 8)]
+
+
+# only patient k=4 ----
+order_cnv = c(order.sample,'Reference' )
+color_cnv = c(col.sample, 'grey')
+#color_cnv = structure( c(brewer.pal(8, "Set1")[c(3,4,5)],"#B3B3B3"), names = order_cnv)
+
+p1 <- ggviolin(cell.cnv.all, x =  "Sample", y = "CNVscore.1", add = 'median_iqr', x.text.angle = 90, fill =  "CNV_cluster", palette = color_cnv) + rremove('legend') 
+
+p2 <- ggviolin(cell.cnv.all, x =  "CNV_cluster", y = "CNVscore.1", add = 'median_iqr', x.text.angle = 90,fill =  "CNV_cluster", palette = color_cnv) + rremove('legend') 
+
+cell.cnv.cluster = cell.cnv.all %>% left_join(data.norm@meta.data %>% select(CellBarcode, SCT_snn_res.0.6, celltype_manu))  %>% 
+         filter(celltype_manu %in% c('B', 'Malignant'))
+                
+stat.cnv.cluster = cell.cnv.cluster %>% group_by(SCT_snn_res.0.6) %>% summarise(median_cnv = median(CNVscore.1)) %>% 
+  arrange(-median_cnv)
+
+p3 <- ggviolin(cell.cnv.cluster %>% mutate(SCT_snn_res.0.6 = factor(SCT_snn_res.0.6, levels = stat.cnv.cluster$SCT_snn_res.0.6)),
+               x =  "SCT_snn_res.0.6", y = "CNVscore.1", add = 'median_iqr', xlab = 'Cluster', ylab= 'CNVscore',
+               fill =  "celltype_manu", palette = col.cell_major[c('B', 'Malignant')])
+
+p3 <- ggviolin(cell.cnv.cluster ,
+               x =  "SCT_snn_res.0.6", y = "CNVscore.1", add = 'median_iqr', xlab = 'Cluster', ylab= 'CNVscore',
+               fill =  "celltype_manu", palette = col.cell_major[c('B', 'Malignant')])
+
+
+ggdensity(cell.cnv.all, x = 'CNVscore.1', xlab = 'CNVscore',  color =   "CNV_cluster", palette = color_cnv) + rremove('legend') 
+
+# save plot
+topptx(p1, filename =  outfile, append = T, title = 'CNVscore - Sample', w = 8, h = 4)
+topptx(p2, filename =  outfile, append = T, title = 'CNVscore - mergeNC', w = 7, h = 4)
+topptx(p3, filename =  outfile, append = T, title = 'CNVscore - Cluster', w = 10, h = 4)
+
+# cutoff of CNV score?
+CNV.cutoff = cell.cnv.all %>% filter(CNV_cluster == 'Reference') %>% pull(CNVscore.1) %>% quantile(0.5)
+# # accroding to the violine figure, may plus the cell bar annotation 
+sum(cell.cnv$CNVscore.1 < CNV.cutoff) # 2982
+data.norm@meta.data %>% filter(Cancer_type == 'MCL', celltype_manu =='B') %>% nrow() #1718
+```
+
+
+- add reference cell and cluster all cells accorind to CNV score to pick out the  cells with strange CNVs
+
+
+
+
+- get more information for the cells in the heatmap
+
+```{r cell annotation by order}
+
+# cell annotation : keep the same order with the plot
+library(ComplexHeatmap)
+
+
+ha = rowAnnotation(df = cell.cnv %>% arrange(-cellorder) %>% select(CellBarcode, CNVscore = CNVscore.1, cellorder) %>%  
+                     left_join(data.norm@meta.data  %>% select(CellBarcode, igl_kl_ratio, SHM_VH  ,Sample,Donor)) %>% 
+                     select(Donor, Sample, CNVscore ,  igl_kl_ratio, SHM_VH  ),
+                   col =  list(Donor = col.patient, Sample = col.sample[unique(cell.cnv$Sample)], 
+                               SHM_VH = circlize::colorRamp2(c( 0, quantile(data.norm$SHM_VH,0.99, na.rm = T)),  c( "#00AFBB", "#FC4E07")), # max need modify
+                               igl_kl_ratio  = circlize::colorRamp2(c( 0, 0.5,1), c(  "#d73027", "#ffffbf","#4575b4")), 
+                               CNVscore  = circlize::colorRamp2(c( 0,CNV.cutoff, 3000), c(  "#438ec2", "white", "#c2438e"))), # max need modify
+                   #barplot = row_anno_barplot(cell.cnv$CNVscore.2, axis = TRUE), 
+                   annotation_width = unit(c(1, 1,1,1,1,1), "cm")
+                   ) 
+
+zero_row_mat = matrix(nrow = nrow(cell.cnv), ncol = 0)
+
+ht = Heatmap(zero_row_mat, left_annotation =  ha)
+
+# copty belows to run in Console
+png(file=paste0( "infercnv/infercnv.CNV.cellannot.png"), width=6,height=10,units="in",res=600)
+#cairo_pdf(file="infercnv/result/CNV.cellannot.pdf", h = 6, w = 4)
+draw(ht)
+dev.off()
+```
+
+
+```{r add CNVscore and CNVcluster to metadata}
+
+data.norm@meta.data = data.norm@meta.data %>% select(-CNV_score, -CellBarcode) #is normal when error run in the first time
+
+data.norm@meta.data = data.norm@meta.data %>% mutate(CellBarcode = rownames(.)) %>% 
+    left_join(cell.cnv.all %>%  transmute(CellBarcode, CNV_score = CNVscore.1)) %>% 
+  mutate(CNV_score = ifelse(celltype_manu %in% c('B', 'Malignant'), CNV_score, NA))
+rownames(data.norm@meta.data) = data.norm@meta.data$CellBarcode
+
+# # re-annot Major cell type by correcting CNV_cluster
+# data.norm$Major_cell_type = if_else(data.norm$celltype_manu == 'B' & !is.na(data.norm$CNV_cluster), 'Malignant', 
+#                                     # if there is a subset of normal CNV, then need to consider use CNV score to find the normal B
+#                                     if_else(grepl('^T', data.norm$celltype_manu), 'T', as.character(data.norm$celltype_manu)))
+#                                     
+# table(data.norm$Major_cell_type)
+
+DimPlot(data.norm, group.by = "CNV_cluster" , reduction = 'umap' , label = F, label.size = 5) + scale_color_manual(values = color_cnv[1:3])
+DimPlot(data.norm, group.by = "orig.ident" , reduction = 'umap' ,  label = F, label.size = 5) + scale_color_manual(values = color_sample)  
+DimPlot(data.norm, group.by = "SCT_snn_res.0.6" , reduction = 'umap' ,  label = T, label.size = 5) 
+DimPlot(data.norm, group.by = "Major_cell_type" , reduction = 'umap' ,  label = T, label.size = 5)  
+
+
+
+```
+
+
+
+```{r cnv score Dimplot}
+
+# plot by CNVscore  ---- 
+meta.CNVscore <- as.data.frame(data.norm@reductions$umap@cell.embeddings) %>% rownames_to_column('CellBarcode') %>% left_join(cell.cnv %>% select(CellBarcode, CNVscore = CNVscore.1, CNV_cluster))
+#meta.multi_features[,"CNVscore"] <- q.all$CNVscore
+dimplot_CNVscore <- function( cell){
+   ggplot(as.data.frame(meta.CNVscore), aes(x=UMAP_1, y=UMAP_2, color=get(cell))) + 
+   geom_point(size = 0.1) +
+   scale_color_gradientn(colours = c("red", "red", "red",  "green", "blue"  ),  values = c(0, 0.25,0.5,0.75,1)) +
+   #scale_color_gradient(low = "gray", high = "red") +
+   #scale_color_gradientn(colors = c("gray","gray","red","red","red")) +
+   labs(title = cell) +
+   theme(panel.background = element_rect(fill = 'white', colour = 'black', size = 2),
+         plot.background = element_rect(fill = 'white'),
+         panel.grid.major = element_blank(),
+         panel.grid.minor = element_blank())
+  
+  #ggsave(last_plot(),  filename =  paste0('plots/mark.', cell, '.expGradient.pdf'), w = 8, h = 8)
+ }
+
+dimplot_CNVscore("CNVscore")
+
+```
+
+
+
+
+# save
+
+```{r}
+saveRDS(data.norm, "Matrix/03_data_cellannot_BCRfilt.rds")
+saveRDS(subset(data.norm, subset = celltype_manu %in% c('Malignant', 'B')), "Matrix/04_B.rds")
+# saveRDS(subset(data.norm, subset = celltype_manu %in% c('B')), "Matrix/04_normB.rds")
+# saveRDS(subset(data.norm, subset = celltype_manu %in% c('Malignant')), "Matrix/04_Malignant.rds")
+saveRDS(subset(data.norm, subset = celltype_manu  %in% c('Malignant', 'B') & Cancer_type == 'MCL'), "Matrix/04_B.patients.rds")
+saveRDS(subset(data.norm, subset = celltype_manu == 'T'), "Matrix/04_T.rds")
+
+```
+
+
+
+# Infer malignant by clonal BCR and IGK/IGL ratio and inferCNV results
+_src/3.1.inferMalignant_perPatient/patient.B.inferMalignant.R + [Patient].Rmd (if any patient need to manually double check)
+
+```{r annot malignant cells}
+data.norm <- readRDS('Matrix//03_data_cellannot_BCRfilt.rds')
+
+read_malignantCells <- function(patient){
+  read_tsv(paste0('q.patient/', patient, '/infered.malignantCells.tsv'))
+}
+
+read_doublets <- function(patient){
+  read_lines(paste0('q.patient/', patient, '/infered.doublets.list'))
+}
+
+malignant.cells <- map_df(unique(phe$Patient[phe$Cancer_type == 'MCL']), read_malignantCells)
+doublets.cells <- unlist(map(unique(phe$Patient[phe$Cancer_type == 'MCL'])[-c(1,8)], read_doublets))
+table(malignant.cells$Sample)
+table(malignant.cells$Malignant)
+names(malignant.cells)
+
+data.norm$celltype_inferMalig <- NULL
+data.norm$domaintClone <- NULL
+
+data.norm@meta.data <- data.norm@meta.data  %>%  left_join(malignant.cells) %>% 
+  mutate(celltype_inferMalig = if_else(! celltype_manu %in% c('Malignant', 'B'), celltype_manu, 
+                                       if_else(CellBarcode %in% doublets.cells, 'Doublets', 
+                                               if_else( !is.na(Malignant), 'Malignant', 'B'))),
+         clonalBCR = ifelse(VDJ_manu == 'TRUE' & !is.na(domaintClone), domaintClone,
+                             ifelse(VDJ_manu == 'TRUE' & is.na(domaintClone), 'Minor', NA )))
+rownames(data.norm@meta.data) = colnames(data.norm@assays$RNA)
+
+table(data.norm$celltype_inferMalig)
+
+write_tsv(malignant.cells, 'q.patient/infered.malignantCells.allpatients.tsv')
+write_lines(doublets.cells, 'q.patient/infered.Bdoublets.allpatients.list')
+
+
+
+```
+
+
+
+
+```{r save}
+
+saveRDS(data.norm, "Matrix/03_data_cellannot_BCRfilt.inferedMalignant.rds")
+saveRDS(subset(data.norm, subset = celltype_inferMalig %in% c('B','Malignant')), "Matrix/04_B.rds")
+saveRDS(subset(data.norm, subset = celltype_inferMalig %in% c('Malignant')), "Matrix/04_Malignant.rds")
+saveRDS(subset(data.norm, subset = celltype_inferMalig %in% c('B')), "Matrix/04_normB.allsubjects.rds")
+saveRDS(subset(data.norm, subset = celltype_inferMalig  %in% c( 'B') & Cancer_type == 'MCL'), "Matrix/04_normB.patients.rds")
+DS(subset(data.norm, subset = celltype_inferMalig == 'Doublets'), "Matrix/04_Bdoublets.rds")
+
+saveRDS(subset(data.norm, subset = celltype_inferMalig %in% c('T', 'NK')), "Matrix/04_NKT.rds")
+saveRsaveRDS(subset(data.norm, subset = celltype_inferMalig %in% c('T')), "Matrix/04_T.rds")
+saveRDS(subset(data.norm, subset = celltype_inferMalig == 'NK'), "Matrix/04_NK.rds")
+saveRDS(subset(data.norm, subset = celltype_inferMalig == 'Myeloid'), "Matrix/04_Myeloid.rds")
+
+```
+
+
+# update the cell annotation after inferring the doublets in T, NK , and Myleoid cells 
+```{r infer doublets & cell subytpes}
+data.norm <- readRDS("Matrix/03_data_cellannot_BCRfilt.inferedMalignant.rds")
+
+# doublets -----
+doublets.myleoid <- readLines('q.myleoid.cells/Doublets.Meyloid.Cellbarcode.list')
+doublets.NKT <- c(readLines('q.t.cells/Doublets.T_B.Cellbarcode.list'))
+annot.NK <- readLines('q.t.cells/NKT/')
+  
+data.norm@meta.data = data.norm@meta.data %>% mutate(celltype_inferMalig_inferDoublets = if_else(CellBarcode %in% c(doublets.myleoid, doublets.NKT), 'Doublets', celltype_inferMalig))
+rownames(data.norm@meta.data) <- data.norm$CellBarcode
+
+# cell subtype (T,NK, Myeloid) -----
+cellsutype.NKT = read_tsv( 'q.patient.T.cells/CellBarcode2CellType.NKT.patiets.xls') %>% select(CellBarcode, Cell_subtype = celltype.T.l1, Cell_subtype.cluster = celltype.T.l3)
+cellsutype.Myeloid = read_tsv( 'q.myleoid.cells/CellBarcode2Celltype.Myeloid.xls') %>% select(CellBarcode, Cell_subtype.cluster = celltype) %>% mutate(Cell_subtype = str_remove_all(Cell_subtype.cluster, '[\\.-].*') )
+
+data.norm@meta.data = data.norm@meta.data %>% left_join(bind_rows(cellsutype.NKT, cellsutype.Myeloid)) %>% 
+  mutate(Major_cell_type = if_else(CellBarcode %in% cellsutype.NKT$CellBarcode ,  Cell_subtype,  celltype_inferMalig_inferDoublets ), # some T in celltype_manu/inferMalignant are NK, so need to correct
+         Major_cell_type = if_else(Major_cell_type %in% c('CD4', 'CD8', 'gdT'), 'T', Major_cell_type),
+         Cell_subtype = if_else(is.na(Cell_subtype), celltype_inferMalig_inferDoublets, Cell_subtype),# add malignant & B cells into subtype
+          Cell_subtype.cluster = if_else(is.na(Cell_subtype.cluster), celltype_inferMalig_inferDoublets, Cell_subtype.cluster)) 
+rownames(data.norm@meta.data) <- data.norm$CellBarcode
+
+saveRDS(subset(data.norm, subset = Major_cell_type != 'Doublets'), "Matrix/03_data_cellannot_BCRfilt.inferedMalignant.noDoublets.rds")
+
+
+```
+
+
+```{r}
+q.all$Cell_subtype <- NULL
+q.all$Cell_subtype.cluster <- NULL
+
+q.all@meta.data = q.all@meta.data %>% left_join(bind_rows(cellsutype.NKT, cellsutype.Myeloid)) %>% 
+  mutate(Major_cell_type = if_else(CellBarcode %in% cellsutype.NKT$CellBarcode ,  Cell_subtype,  celltype_inferMalig_inferDoublets ), # some T in celltype_manu/inferMalignant are NK, so need to correct
+         Major_cell_type = if_else(Major_cell_type %in% c('CD4', 'CD8', 'gdT'), 'T', Major_cell_type),
+         Cell_subtype = if_else(is.na(Cell_subtype), celltype_inferMalig_inferDoublets, Cell_subtype),# add malignant & B cells into subtype
+          Cell_subtype.cluster = if_else(is.na(Cell_subtype.cluster), celltype_inferMalig_inferDoublets, Cell_subtype.cluster)) 
+rownames(q.all@meta.data) <- q.all$CellBarcode
+
+table(q.all$Cell_subtype)
+table(q.all$Cell_subtype.cluster)
+
+q.all@meta.data  = q.all@meta.data %>% mutate(Major_cell_type.l2 = if_else(!Major_cell_type %in% c('Malignant','B', 'T', 'NK', 'Myeloid'), 'Others',
+                                                                           if_else(Major_cell_type == 'T', Cell_subtype, Major_cell_type)))
+rownames(q.all@meta.data) <- q.all$CellBarcode
+table(q.all$Major_cell_type.l2)
+color.major_celltype.l2 <- structure(c("#E41A1C", "#377EB8", "#4DAF4A","#8DD3C7", "#FDB462","#BEBADA" , "#FF7F00",  "#984EA3",  "grey80" ), 
+                             names = c("Malignant",   "B", "T" ,  "CD4",  "CD8", "gdT" ,  "NK" ,    "Myeloid" ,      "Others"   ))
+
+saveRDS(subset(q.all, subset = Major_cell_type != 'Doublets'), "Matrix/03_data_cellannot_BCRfilt.inferedMalignant.noDoublets.rds")
+
+```
+
+
+# update the malignant cell annotation after reclustering each paired patient
+```{r malignant subcluster}
+
+# MC3 
+q.p.mc3 <- readRDS('q.patient/MC3/Matrix/patient.malignant.norm.clust.rds') 
+MC3.annot <- q.p.mc3@meta.data %>% transmute(CellBarcode, Malignant.cluster = str_c("Malignant.C", Cluster),
+                                             SHM.subclone = if_else(SHM_VH == 0, 'SHM0', if_else(SHM_VH < 0.34, 'SHM1', if_else(SHM_VH < 0.66, 'SHM2', 'NA')) ) )
+table(MC3.annot$Malignant.cluster)
+table(MC3.annot$SHM.subclone)
+
+# MC201
+q.p.mc201 <- readRDS('q.patient/MC201/Matrix/patient.malignant.norm.clust.rds') 
+q.p.mc201 <- q.p.mc201@meta.data %>% transmute(CellBarcode, Malignant.cluster = str_c("Malignant.C", Cluster) )
+table(q.p.mc201$Malignant.cluster)
+
+# MC202
+q.p.mc202 <- readRDS('q.patient/MC202/Matrix/patient.malignant.norm.clust.rds') 
+q.p.mc202 <- q.p.mc202@meta.data %>% transmute(CellBarcode, Malignant.cluster = str_c("Malignant.C", Cluster) )
+table(q.p.mc202$Malignant.cluster)
+
+
+# MC203
+q.p.mc203 <- readRDS('q.patient/MC203/Matrix/patient.malignant.norm.clust.rds') 
+q.p.mc203 <- q.p.mc203@meta.data %>% transmute(CellBarcode, Malignant.cluster = str_c("Malignant.C", Cluster) )
+table(q.p.mc203$Malignant.cluster)
+
+# MC205
+q.p.mc205 <- readRDS('q.patient/MC205/Matrix/patient.malignant.norm.clust.rds') 
+q.p.mc205 <- q.p.mc205@meta.data %>% transmute(CellBarcode, Malignant.cluster = str_c("Malignant.C", Cluster), SHM.subclone =  subclone)
+table(q.p.mc205$Malignant.cluster)
+
+# MC206
+q.p.mc206 <- readRDS('q.patient/MC206/Matrix/patient.malignant.norm.clust.rds') 
+q.p.mc206 <- q.p.mc206@meta.data %>% transmute(CellBarcode, Malignant.cluster = str_c("Malignant.C", Cluster))
+table(q.p.mc206$Malignant.cluster)
+
+# MC4
+q.p.mc4 <- readRDS('q.patient/MC4/Matrix/patient.malignant.norm.clust.rds') 
+q.p.mc4 <- q.p.mc4@meta.data %>% transmute(CellBarcode, Malignant.cluster = str_c("Malignant.C", Cluster))
+table(q.p.mc4$Malignant.cluster)
+
+# merge cell annotation
+malignant.annot <- bind_rows(MC3.annot, q.p.mc201, q.p.mc202, q.p.mc203, q.p.mc205, q.p.mc206, q.p.mc4)
+write_tsv(malignant.annot, 'q.b.patient/Malignant.subcluster.cellannote.pairs.tsv')
+malignant.annot = read_tsv('q.b.patient/Malignant.subcluster.cellannote.pairs.tsv')
+
+# integrate into q.all
+q.all <- readRDS('Matrix/03_data_cellannot_BCRfilt.inferedMalignant.noDoublets.rds')
+q.all@meta.data <- q.all@meta.data %>% left_join(malignant.annot)
+rownames(q.all@meta.data) <- q.all$CellBarcode
+table(q.all$Malignant.cluster)
+saveRDS(q.all, "Matrix/03_data_cellannot_BCRfilt.inferedMalignant.noDoublets.annotCellsubtype.rds")
+
+
+```
+
+
+```{r CellBarcode2Celltype}
+for (i  in 1:20) {
+  
+  df.cc = q.all@meta.data %>% 
+      filter(Sample == phe$Sample[i], Major_cell_type %in% c('Malignant', 'B', 'T', 'NK', 'Myeloid')) %>% 
+      transmute(Index = str_remove_all(CellBarcode, '.*_'), Cell_type = Major_cell_type )
+  
+  write_tsv(df.cc, paste0( 'q.samples/Cellannot/', phe$Sample[i], '_', phe$Tissue[i], '.cell_barcode_annotations.tsv'))
+}
+
+
+malignant.annot <- read_tsv( 'q.b.patient/Malignant.subcluster.cellannote.pairs.tsv')
+sample_list = malignant.annot$CellBarcode %>% str_remove_all('_[ATCG].*') %>% unique()
+for (i in sample_list){
+    write_tsv(malignant.annot %>% filter(grepl(i,CellBarcode )) %>% 
+                transmute(Index = str_remove_all(CellBarcode, '.*_'), Cell_type = Malignant.cluster ) , 
+              paste0( 'q.samples/Cellannot_Malignant/', i, '.cell_barcode_annotations.tsv'))
+
+}
+
+```
+
