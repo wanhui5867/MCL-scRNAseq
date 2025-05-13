@@ -1,0 +1,562 @@
+---
+  title: "T.subset"
+author: "hui.wan"
+date: "30/01/2025"
+output: html_document
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, warning = F, message = F)
+knitr::opts_knit$set(root.dir = '~/OneDrive - Karolinska Institutet//Documents//Project/MCL_scRNAseq/')
+```
+
+
+```{r load pkgs}
+source(file = '_src/Rfunctions_for_scRNA.R')
+source(file = '_src/global_setting.R')
+
+```
+
+
+## set variables
+```{r gloable vars}
+
+
+outdir = 'q.myleoid.cells/mergedData/'
+dir.create(outdir)
+outfile = 'plot—Myleoid.pptx'
+```
+
+
+## Load datasets
+```{r load data}
+q.mo.raw <- readRDS('Matrix/004_Myeloid.rds') # Normalized and clustered
+
+```
+
+
+## Preporcess using seurat
+
+```{r preprocess}
+# Done in the uppmax
+q.mo <- q.mo %>%
+  SCTransform( assay = "RNA", new.assay.name = "SCT", verbose = FALSE) %>%
+  RunPCA( npcs = 50, verbose = F, assay.use = "SCT") %>%
+  RunHarmony( group.by.vars = c("Dataset", "Sample") ,dims.use = 1:50)  %>%
+  RunUMAP(dims = 1:20, reduction = "harmony", reduction.name = "umap") %>%
+  FindNeighbors( dims = 1:20,  reduction = "harmony") %>%
+  FindClusters(resolution = 1,  graph.name = 'SCT_snn') %>%
+  identity()
+
+DimPlot(q.mo, group.by = "celltype_manu", reduction = 'umap') +   ggtitle('umap')  
+DimPlot(q.mo, group.by = "orig.ident", reduction = 'umap') +   ggtitle('umap')  
+
+```
+
+
+
+
+re-clustering
+```{r subclustering}
+
+# building graph
+q.mo@active.assay
+my.reduction = "umap"
+
+# check the names for graphs in the object.
+names(q.mo@graphs)
+
+# Clustering with louvain (algorithm 1)
+for (res in c(0.1, 0.25,  0.5, 0.75, 1, 1.5, 2)) {
+  q.mo <- FindClusters(q.mo, graph.name = "SCT_snn", resolution = res, algorithm = 1 )
+}
+
+plot_grid(ncol = 3, 
+          #DimPlot(data.filt, reduction = "umap", group.by = "orig.ident") + ggtitle("UMAP raw_data"),
+          #DimPlot(q.mo, reduction = my.reduction, group.by = "orig.ident") + ggtitle("UMAP "),
+          DimPlot(q.mo, reduction = my.reduction, label =  T, group.by = "SCT_snn_res.0.25") +  ggtitle("louvain_0.1") ,
+          DimPlot(q.mo, reduction = my.reduction, label =  T, group.by = "SCT_snn_res.0.25") +  ggtitle("louvain_0.25") , 
+          DimPlot(q.mo, reduction = my.reduction, label =  T, group.by = "SCT_snn_res.0.5") +  ggtitle("louvain_0.5") , 
+          DimPlot(q.mo, reduction = my.reduction, label =  T, group.by = "SCT_snn_res.0.75") +  ggtitle("louvain_0.75") , 
+          DimPlot(q.mo, reduction = my.reduction, label = T, group.by = "SCT_snn_res.1") +  ggtitle("louvain_1"), 
+          DimPlot(q.mo, reduction = my.reduction,label = T,  group.by = "SCT_snn_res.1.5") +  ggtitle("louvain_1.5"),
+          DimPlot(q.mo, reduction = my.reduction,  group.by = "SCT_snn_res.2", label = T) +  ggtitle("louvain_2") ,
+          DimPlot(q.mo, group.by = "celltype_manu", reduction = 'umap') +   ggtitle('umap')  ,
+          DimPlot(q.mo, group.by = "orig.ident", reduction = 'umap') +   ggtitle('umap')  
+          
+          
+)
+
+ggsave(last_plot(), filename = paste0(outdir, '02.regressNo_harmonyNo.dimplot.resoultionSelect.png'), w = 16, h = 10) 
+res = 0.5 # 
+#res = 1.5
+
+q.mo <- FindClusters(q.mo, graph.name = "SCT_snn", resolution = 0.25, algorithm = 1 )
+```
+
+
+```{r plot clustree}
+q.mo$SCT_snn_res.0.6 <- NULL
+clustree(q.mo@meta.data, prefix = "SCT_snn_res.")
+ggsave(last_plot(), filename = paste0(outdir, '02.dimplot.resoultionTree.harmony.png'), w = 7, h = 10) 
+
+```
+
+
+### Dimplot & save 
+
+```{r save/read}
+
+q.mo <- readRDS('NormalData/normalization/Myeloid_harmony_dataset_sample/data.Integrate.rds')
+
+
+```
+
+
+```{r  Dimplot}
+
+w = 6
+h = 6
+pt = 2
+reduction = 'umap'
+sel.clust = "SCT_snn_res.0.25"
+
+
+# plot dataset=3
+ggsave( DimPlot(q.mo, reduction = reduction, group.= "dataset", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('Dataset') ) + 
+                    scale_color_manual(values = col.dataset) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Dataset.T.png'), w = w+2, h = h)
+
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.= "dataset", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Dataset') ) + 
+                    scale_color_manual(values = col.dataset) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Dataset.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.= "dataset", repel = T, label = T, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Dataset') ) + 
+                    scale_color_manual(values = col.dataset) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir,reduction, '.Dataset.L.png'), w = w, h = h)
+
+# plot cancer type
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = "Cancer_type", repel = T, pt.size = pt,  label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('Cancer type') ) + 
+          scale_color_manual(values = col.cancer_type) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.cancer_type.T.png'), w = w+2, h = h)
+
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = "Cancer_type", repel = T, label = F, pt.size = pt,label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Cancer type') ) + 
+          scale_color_manual(values = col.cancer_type) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.cancer_type.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = "Cancer_type", repel = T, label = T, pt.size = pt,label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Cancer type') ) + 
+          scale_color_manual(values = col.cancer_type) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.cancer_type.L.png'), w = w, h = h)
+
+# plot sampling tissue
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = "Tissue", repel = T, label = F, label.size = 7,pt.size = pt, raster = T) + NoAxes()  +  
+          labs(title = paste0('Tissue') ) + 
+          scale_color_manual(values = col.tissue) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.tissue.T.png'), w = w+1, h = h)
+
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = "Tissue", repel = T, label = F, label.size = 7, pt.size = pt,raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Tissue') ) + 
+          scale_color_manual(values = col.tissue) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.tissue.F.png'), w = w, h = h)
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = "Tissue", repel = T, label = T, label.size = 7,pt.size = pt, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Tissue') ) + 
+          scale_color_manual(values = col.tissue) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.tissue.L.png'), w = w, h = h)
+
+
+# plot samples
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = "Sample", repel = T, label = F, label.size = 7, pt.size = pt,raster = T) + NoAxes()  +  
+          labs(title = paste0('Sample') ) + 
+          scale_color_manual(values = col.sample) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.sample.T.png'), w = w+2, h = h)
+
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = "Sample", repel = T, label = F, label.size = 7,pt.size = pt, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          scale_color_manual(values = col.sample) + 
+          labs(title = paste0('Sample') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.sample.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = "Sample", repel = T, label = T, label.size = 5, pt.size = pt,raster = T) + NoAxes()  +  
+          NoLegend() + 
+          scale_color_manual(values = col.sample) + 
+          labs(title = paste0('Sample') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.sample.L.png'), w = w, h = h)
+
+# plot Donor/patients
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = "Patient", repel = T, label = F, label.size = 7,pt.size = pt, raster = T) + NoAxes()  +  
+          labs(title = paste0('Patient') ) + 
+          scale_color_manual(values = col.patient) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Patient.T.png'), w = w+2, h = h)
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = "Patient", repel = T, label = F, label.size = 7, pt.size = pt,raster = T) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('Patient') ) + 
+          scale_color_manual(values = col.patient) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Patient.F.png'), w = w, h = h)
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = "Patient", repel = T, label = T, label.size = 6, pt.size = pt,raster = T) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('Patient') ) + 
+          scale_color_manual(values = col.patient) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Patient.L.png'), w = w, h = h)
+
+
+# plot Sampling time
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = "Sampling_time", repel = T, label = F, label.size = 7,pt.size = pt, raster = T) + NoAxes()  +  
+          labs(title = paste0('Sampling time') ) + 
+          scale_color_manual(values = col.samtime) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Sampling_time.T.png'), w = w+1, h = h)
+
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = "Sampling_time", repel = T, label = F, label.size = 7,pt.size = pt, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Sampling time') ) + 
+          scale_color_manual(values = col.samtime) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Sampling_time.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = "Sampling_time", repel = T, label = T, label.size = 7, pt.size = pt,raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Sampling time') ) + 
+          scale_color_manual(values = col.samtime) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Sampling_time.L.png'), w = w, h = h)
+
+
+
+# by cell cycle
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = 'Phase', repel = T, label = F, label.size = 7 , pt.size = pt,raster = T) + NoAxes()  +  
+          labs(title = paste0('Cell cycle') ) + 
+          scale_color_manual(values = color_cellcycle) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.CellCycle.T.png'), w = w+1, h = h)
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = 'Phase', repel = T, label = F, label.size = 7 , pt.size = pt,raster = T) + NoAxes()  +   NoLegend() +
+          labs(title = paste0('Cell cycle') ) + 
+          scale_color_manual(values = color_cellcycle) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.CellCycle.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = 'Phase', repel = T, label = T, label.size = 7 , pt.size = pt,raster = T) + NoAxes()  +   NoLegend() +
+          labs(title = paste0('Cell cycle') ) + 
+          scale_color_manual(values = color_cellcycle) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.CellCycle.L.png'), w = w, h = h)
+
+
+
+
+
+# by clusters
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = sel.clust, repel = T, label = T, pt.size = pt,label.size = 7) + NoAxes()  +  
+          labs(title = paste0('Cluster') ) + NoLegend() +
+          #scale_color_manual(values = color_cnv) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Cluster.L.png'), w = w, h = h)
+
+
+# doublets
+FeaturePlot(q.mo, reduction = my.reduction, dims = 1:2, features = c(markers.B, markers.NK, markers.Myeloid), ncol = 3, raster = T) & NoLegend()
+
+ggsave( FeaturePlot(q.mo, reduction = my.reduction, dims = 1:2, features = c(markers.B,markers.T.sub, markers.NK, markers.Myeloid), ncol = 3, raster = T) & NoLegend(), 
+        filename =  paste0(outdir,reduction, '.DoubletsCheck.png'), w = w*2, h = h*2)
+
+
+```
+
+
+## Cell type annotation
+
+### Manully annot
+May need to check different resolution to find a better one that can distinct different subtypes
+Check the markers of each subtypes and combined with DEGs to further characterize each cluster
+
+
+
+```{r}
+q.mo@meta.data <- q.mo@meta.data %>%
+  mutate(origin.Mo = if_else(dataset=='This study', str_remove(origin.final_cell_type, '\\.c\\d+'), 'NA'))
+rownames(q.mo@meta.data) <- q.mo$CellBarcode
+
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = "origin.Mo", repel = T, label = F, label.size = 7) + NoAxes()  +
+          labs(title = paste0('Cell subtype ') ) +
+          scale_color_manual( values = col.mo) +
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Celltype.origin.pdf'), w = w+1, h = h)
+
+
+
+```
+
+
+```{r, fig.width=6, fig.height=2}
+
+
+
+Myeloid.all <-  readxl::read_excel('_ref/Tcell.markers.xlsx', sheet = 'Myeloid')
+
+sel.clust <- "SCT_snn_res.0.25"
+Idents(q.mo) <- sel.clust
+table(q.mo$`SCT_snn_res.0.25`)
+
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = sel.clust, repel = T, label = T, pt.size = pt,label.size = 7) + NoAxes()  +  
+          labs(title = paste0('Cluster') ) + NoLegend() +
+          #scale_color_manual(values = color_cnv) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Cluster.L.png'), w = w, h = h)
+
+
+
+pm.t <- DotPlot(q.mo,  cluster.idents = T,features = rev(unique(c(markers.B, markers.T,Myeloid.all$Gene))), dot.min = 0,  col.min = 0, dot.scale = 7) + RotatedAxis()  + coord_flip()
+ggsave(pm.t, file = paste0(outdir, 'Dotplot.markers_Meyloid.subtypes.pdf'), h = 14, w = 10)
+
+
+
+```
+
+
+
+
+```{r}
+
+Idents(q.mo) <- 'Cluster'
+Idents(q.mo) <- 'SCT_snn_res.0.25'
+
+
+pm.t <- DotPlot(q.mo,  cluster.idents = T,features = rev(unique(c(Myeloid.all$Gene[Myeloid.all$Show == 1], 
+                                                                  'MKI67','CR1', 'CR2','CST3',
+                                                                  'CD68', 'C1QC','C1QA', 'APOE',
+                                                                  'KIT', 'TPSAB1', 'CPA3'))), dot.min = 0,  col.min = 0, dot.scale = 7) + RotatedAxis()  + coord_flip()
+
+
+cell.types <- data.frame(cellcluster = 0:7, infer_Mo_type = c('CD14 Mono', # c0: CD14+
+                                                     'GMP',  # c1: GMP: MPO+ , AZU1+
+                                                     'pDC', # c2: IL3RA, GZMB
+                                                     'CD16 Mono', # c3: FCGR3A+ (CD16), RHOC+ MS4A7+
+                                                      'Macro', # c4: CD14+ CD68+ C1QC+ C1QA+, APOE+
+                                                     'cDC', # c5: CD1C+, FCER1A
+                                                     'GMP-prolif' ,# c6
+                                                     'cDC' # c7 CST3+
+                                                   
+))
+
+q.mo@meta.data %>% filter(SCT_snn_res.0.25 == 7) %>% pull(Tissue) %>% table()
+q.mo@meta.data %>% filter(SCT_snn_res.0.25 == 7) %>% pull(Sample) %>% table()
+q.mo@meta.data %>% filter(SCT_snn_res.0.25 == 7) %>% pull(origin.final_cell_type) %>% table()
+
+
+q.mo$infer_Mo_type <- plyr::mapvalues(q.mo@active.ident, cell.types$cellcluster , cell.types$infer_Mo_type )
+
+# infer the cells with unknow cell types
+q.mo@meta.data = q.mo@meta.data %>% 
+  mutate(celltype_manu = if_else(!is.na(origin.Mo) & origin.Mo != 'NA', origin.Mo, infer_Mo_type),
+         celltype_manu = if_else(infer_Mo_type == 'Macro' & Dataset == 'This study', 'Macro', celltype_manu))
+
+rownames(q.mo@meta.data) = q.mo$CellBarcode 
+
+
+
+order.mo <- c('CD14 Mono', 'CD16 Mono', 'Macro', 'cDC', 'pDC', 'GMP','GMP-prolif' )
+q.mo$celltype_manu <- factor(q.mo$celltype_manu, levels = order.mo)
+
+
+```
+
+
+# dimplot
+```{r plot}
+
+# dimplot
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = 'celltype_manu', repel = T, label = T, pt.size = pt,label.size = 7) + NoAxes()  +  
+          labs(title = paste0('Cell subtype') ) + NoLegend() +
+          scale_color_manual(values = col.mo) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Celltype.T.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = 'celltype_manu', repel = T, label = F, pt.size = pt,label.size = 7) + NoAxes()  +  
+          labs(title = paste0('Cell subtype') ) + NoLegend() +
+          scale_color_manual(values = col.mo) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Celltype.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.mo, reduction = reduction, group.by = 'celltype_manu', repel = T, label = T, pt.size = pt,label.size = 7) + NoAxes()  +  
+          labs(title = paste0('Cell subtype') ) + 
+          scale_color_manual(values = col.mo) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Celltype.L.png'), w = w+1, h = h)
+
+# dotplot
+Idents(q.mo) <- 'celltype_manu'
+pm.t <- DotPlot(q.mo,  cluster.idents = T,features =  rev(unique(c(Myeloid.all$Gene[Myeloid.all$Show == 1], 'MKI67'))), dot.min = 0,  col.min = 0, dot.scale = 7) 
+
+pd.df <- pm.t$data %>% rownames_to_column('Gene') %>% 
+  rowwise() %>%  mutate(Cluster = factor(as.character(id), levels = c(order.mo)) , Gene = features.plot) %>% 
+  # mutate(Gene = factor(Gene , levels = rev(unique(T.all$Gene)))) %>% 
+  mutate(pct = ifelse(pct.exp ==0, NA, pct.exp))
+
+
+ggplot(pd.df) +
+  geom_point(aes(x = Cluster, y = Gene, size = pct.exp, color = avg.exp.scaled)) +
+  scale_size_area(limits = c(0,100)) + 
+  scale_colour_gradient(low = 'grey', high = '#0000FF' ) +
+  theme_bw() + 
+  theme(axis.text.x =  element_text(angle = 60,  hjust=1), axis.title = element_blank(), panel.grid =  element_blank()) 
+
+ggsave(last_plot(), file = paste0(outdir, 'Dotplot.markers.Myeloid.pdf'), w = 7, h = 4.5)
+
+
+
+```
+
+
+
+
+```{r dotplot of MHCII to check the MDSC}
+DotPlot(subset(q.mo, subset = celltype_manu %in% c('CD14 Mono', 'CD16 Mono', 'Macro')) ,  cluster.idents = T, features = c(marker.mhc2),  dot.min = 0,  col.min = 0, dot.scale = 7) +
+  RotatedAxis()  + theme_bw() + 
+  theme(axis.text.x =  element_text(angle = 60,  hjust=1), axis.title = element_blank(), panel.grid =  element_blank()) 
+ggsave(last_plot(), file = paste0(outdir, 'Dotplot.markers.Myeloid.MHCII.pdf'), w = 7, h = 3)
+
+
+ 
+FeaturePlot(q.mo, features = c('ITGAM', 'CD14', 'CD33', 'HLA-DQB1'), ncol = 2) & NoLegend() & theme(panel.background = element_rect(colour = 'black', size = 2))  & NoAxes()
+ggsave(last_plot(), file = paste0(outdir, 'FeaturePlot.MDSC.pdf'), w = 8, h = 8)
+
+
+```
+
+
+
+```{r save}
+write_tsv(q.mo@meta.data  %>% select(CellBarcode, celltype_manu), 'q.myleoid.cells/mergedData/Cellannotation.Myeloid.tsv')
+saveRDS(q.mo, 'q.myleoid.cells/mergedData/02.myeloid.cellannot.rds')
+
+```
+
+
+## Cell composition 
+-barplot
+```{r cell% barplot}
+
+stat.celltype.total = q.mo@meta.data  %>% select( Celltype = celltype_manu) %>% 
+  group_by( Celltype) %>% summarise(n_cells = n()) %>% spread(Celltype, n_cells)
+stat.celltype.sample = q.mo@meta.data  %>% select(Sample, Celltype = celltype_manu ) %>%
+  group_by(Sample, Celltype) %>% summarise(n_cells = n()) %>% spread(Celltype, n_cells,fill = 0) 
+write_tsv(stat.celltype.sample %>% bind_rows(stat.celltype.total %>% mutate(Sample = 'Total')) %>% as.data.frame(), paste0(outdir, 'stat.cell_number.perSample.xls'))
+
+
+plot.celltype.sample  = stat.celltype.sample %>%  select(Sample, everything()) %>% 
+  gather(Celltype, Cell_number, -Sample) %>% 
+  left_join(phe) 
+
+# sample 
+ggbarplot(plot.celltype.sample %>% group_by(Sample, Celltype) %>% summarise(Cell_number = sum(Cell_number)) %>% left_join(phe),
+          x = 'Celltype', y = 'Cell_number', fill = 'Sample',  position = position_fill(),
+           legend = 'right', order = order.mo,
+          palette = col.sample)  + coord_flip()
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 6, height = 5)
+
+# P/R
+ggbarplot(plot.celltype.sample%>% left_join(phe) %>% group_by(Sampling_time, Celltype) %>% summarise(Cell_number = sum(Cell_number)) ,
+          x = 'Celltype', y = 'Cell_number', fill = 'Sampling_time',  position = position_fill(),
+           legend = 'right', order = order.mo, palette = col.samtime)  + coord_flip()
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 6, height = 5)
+
+# Tissue
+ggbarplot(plot.celltype.sample%>% left_join(phe) %>% group_by(Tissue, Celltype) %>% summarise(Cell_number = sum(Cell_number)) ,
+          x = 'Celltype', y = 'Cell_number', fill = 'Tissue',  position = position_fill(),
+           legend = 'right', order = order.mo, palette = col.tissue)  + coord_flip()
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 6, height = 5)
+
+
+```
+
+
+
+DvsR (NOT RUN)
+
+```{r}
+plot.celltype.DR  = q.mo@meta.data  %>% select( Celltype = celltype_manu, everything()) %>% 
+  group_by( Sampling_time, Celltype) %>% summarise(n_cells = n()) 
+
+# sample 
+ggbarplot(plot.celltype.DR ,
+          x = 'Sampling_time', y = 'n_cells', fill = 'Celltype',  position = position_fill(),
+           legend = 'right', order = order.samtime) 
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 4, height = 5)
+
+```
+
+
+
+
+# feature
+whether MDSC signature changes within  sampling times
+```{r Vln, fig.height=2, fig.width=6}
+
+genes = marker.mhc2[-length(marker.mhc2)]
+
+q.mo <- AddModuleScore(q.mo, features =genes ,name= c( "MHCII_score"))
+
+MHC2.score.DR <- VlnPlot(subset(q.mo, subset = Sampling_time != 'Progress'), 
+                      features = "MHCII_score1", pt.size = 0,  group.by= 'celltype_manu', split.by = 'Sampling_time', cols = col.samtime) +
+  geom_boxplot(position=position_dodge(1), width=0.1, outlier.shape = NA)
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 5, height = 4)
+
+
+MHC2.score.sample <- VlnPlot(subset(q.mo, subset = Sample %in% select.sample), 
+                      features = "MHCII_score1", pt.size = 0,  group.by= 'celltype_manu', split.by = 'Sample', cols = col.sample) +
+  geom_boxplot(position=position_dodge(1), width=0.1, outlier.shape = NA)
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 5, height = 4)
+
+
+```
+
+
+

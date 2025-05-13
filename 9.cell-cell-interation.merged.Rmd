@@ -1,0 +1,1770 @@
+---
+title: "cell-cell-interation"
+author: "hui.wan"
+date: "06/02/2024"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, warning = F, message = F)
+knitr::opts_knit$set(root.dir = '~/OneDrive - Karolinska Institutet/Documents//Project/MCL_scRNAseq//')
+```
+
+
+
+
+# setup
+
+```{r load package}
+library(liana)
+library(tidyverse)
+library(magrittr)
+library(circlize)
+library(rstatix)
+# library(xlsx) # may encouter java error
+library(openxlsx)
+source('_src/global_setting.R')
+
+```
+
+
+```{r set up}
+ref.lr = read_tsv('_ref/immune_ligand_receptor_pairs.xiaofei.tsv')
+mydir = 'CellTalk_merged/'
+dir.create(mydir)
+outfile = 'CellTalk_merged/plot.pptx'
+
+order.final_cell_type_major = c("Malignant"  , "B", "CD4.Tn", "CD4.Tm", "CD4.Treg" ,"CD4.Tfh" ,
+                                "CD8.Teff", "CD8.Tex" , "CD8.Tm" , "CD8.Tn" , "CD8.Tprolif" , 
+                                "gdT" , "CD16.NK", "CD56.NK" , 
+                                 "CD14 Mono" ,"CD16 Mono" , "Macro", "cDC" , "pDC", "GMP" , "GMP-prolif" )
+
+col.final_cell_type_major = c(col.cell_major, color.T2, col.mo)[order.final_cell_type_major]
+```
+
+
+
+- prepare data
+```{r load seurate object}
+
+q.all <- readRDS("NormalData/normalization/harmony_dataset/harmony_datasetdata.Integrate.cellannot.rds")
+malignant.annot <- read_tsv('q.b.patient/Malignant.subcluster.cellannote.pairs.tsv')
+NKT.annot <- read_tsv('q.NKT.cells/CellBarcode2CellType.NKT.patiets.xls')
+Mo.annot <- read_tsv('q.myleoid.cells/mergedData/Cellannotation.Myeloid.tsv')
+
+
+q.all@meta.data <- q.all@meta.data %>% 
+  left_join(bind_rows(NKT.annot %>% select(CellBarcode, TME.cell_subtype = celltype.T.l2),
+                      Mo.annot %>% select(CellBarcode, TME.cell_subtype = celltype_manu))) %>% 
+  mutate(final_cell_type_major = if_else(Major_cell_type %in% c('T','NK','Myeloid'), TME.cell_subtype, Major_cell_type)) %>% 
+   left_join(malignant.annot) %>%  # Malignant.cluster & SHM.subclone
+   mutate(final_cell_type_major.subcluster = if_else(final_cell_type_major == 'Malignant' & Donor %in% c('MC3', 'MC4', 'MC201', 'MC202', 'MC203', 'MC205', 'MC206'), Malignant.cluster, final_cell_type_major)
+         ) # Need to modify
+
+rownames(q.all@meta.data) = q.all$CellBarcode
+
+saveRDS(q.all, 'Matrix/004_Allcells.finalCellAnnot.rds')
+
+
+# subset the major cell type to analysis cell talk
+q.cc <- subset(q.all, subset =  Major_cell_type %in% c('Malignant','B', 'T', 'NK', 'Myeloid'))
+saveRDS(q.cc, 'CellTalk_merged//10.mergedCells.forCCC.rds')
+
+
+```
+
+
+
+# Cell composition
+
+- barplot
+```{r cell% barplot per cell type}
+stat.celltype.total = q.cc@meta.data  %>% 
+  select( Celltype = final_cell_type_major) %>% 
+  # filter(Celltype != 'Malignant') %>% 
+  group_by( Celltype) %>% summarise(n_cells = n()) %>% spread(Celltype, n_cells)
+stat.celltype.sample = q.cc@meta.data  %>% 
+  select(Sample, Celltype = final_cell_type_major ) %>% 
+  # filter(Celltype != 'Malignant') %>% 
+  group_by(Sample, Celltype) %>% summarise(n_cells = n()) %>% spread(Celltype, n_cells,fill = 0) 
+write_tsv(stat.celltype.sample %>% bind_rows(stat.celltype.total %>% mutate(Sample = 'Total')) %>% as.data.frame(), paste0(outdir, 'stat.cell_number.perSample.xls'))
+
+
+plot.celltype.sample  = stat.celltype.sample %>%  select(Sample, everything()) %>% 
+  gather(Celltype, Cell_number, -Sample) %>% 
+  filter(Celltype != 'Malignant') %>% 
+  left_join(phe) 
+
+# sample 
+ggbarplot(plot.celltype.sample %>% group_by(Sample, Celltype) %>% summarise(Cell_number = sum(Cell_number)) %>% left_join(phe),
+          x = 'Celltype', y = 'Cell_number', fill = 'Sample',  position = position_fill(),
+           legend = 'right', order = order.final_cell_type_major,
+          palette = col.sample)  + coord_flip()
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 6, height = 5)
+
+# P/R
+ggbarplot(plot.celltype.sample%>% left_join(phe) %>% group_by(Sampling_time, Celltype) %>% summarise(Cell_number = sum(Cell_number)) ,
+          x = 'Celltype', y = 'Cell_number', fill = 'Sampling_time',  position = position_fill(),
+           legend = 'right', order = order.final_cell_type_major, palette = col.samtime)  + coord_flip()
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 6, height = 5)
+
+# Tissue
+ggbarplot(plot.celltype.sample%>% left_join(phe) %>% group_by(Tissue, Celltype) %>% summarise(Cell_number = sum(Cell_number)) ,
+          x = 'Celltype', y = 'Cell_number', fill = 'Tissue',  position = position_fill(),
+           legend = 'right', order = order.final_cell_type_major, palette = col.tissue)  + coord_flip()
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 6, height = 5)
+
+
+# distribution per sample
+ggbarplot(plot.celltype.sample %>% group_by(Sample, Celltype) %>% summarise(Cell_number = sum(Cell_number)) %>% left_join(phe),
+          x = 'Sample', y = 'Cell_number', fill = 'Celltype',  position = position_fill(),
+           legend = 'right', order = order.sample, x.text.angle = 90,
+          palette = col.final_cell_type_major) 
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 8, height = 5)
+```
+
+
+
+- heatmap to group sample by cell composition
+```{r}
+# heatmap
+ph <- pheatmap(plot.celltype.sample %>% 
+                 filter(Celltype != 'Malignant' ) %>% group_by(Sample) %>% mutate(Cell_pct = Cell_number/sum(Cell_number)) %>% 
+         # select(Sample, Celltype, Cell_pct) %>% spread(Sample, Cell_pct, fill = 0) %>% column_to_rownames('Celltype'),
+         select(Sample, Celltype, Cell_number) %>% spread(Sample, Cell_number, fill = 0) %>% column_to_rownames('Celltype'), scale = 'column',
+         # cluster_rows = F,
+         legend_labels = 'scaled cell proportion within sample', 
+                   annotation_col = phe %>% select(Cancer_type, Sample, Tissue, Donor, Sampling_time) %>% column_to_rownames('Sample') %>% as.data.frame(),
+                  annotation_colors = list(Cancer_type = col.cancer_type, Tissue = col.tissue, Donor = col.patient, Sampling_time = col.samtime),
+                 color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(15) )
+
+pdf(paste0(mydir, 'Heatmap.Cellcomposition.withoutMalignant.pdf'), w = 8, h = 6)
+ph
+dev.off()
+
+
+
+# barplot ordered by cluster
+ggbarplot(plot.celltype.sample %>% group_by(Sample, Celltype) %>% summarise(Cell_number = sum(Cell_number)) %>% left_join(phe),
+          x = 'Sample', y = 'Cell_number', fill = 'Celltype',  position = position_fill(),
+           legend = 'right', x.text.angle = 90,
+          order = ph$tree_col$labels[ph$tree_col$order], 
+          palette = col.final_cell_type_major) 
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 8, height = 5)
+
+```
+
+
+- pie plot
+```{r pie sample}
+# save table
+df.celltype.major = q.all@meta.data %>% select(Sample, Major_cell_type) %>% group_by(Sample, Major_cell_type) %>% 
+  summarise(N_cells = n()) %>% spread(Major_cell_type, N_cells, fill = 0)
+write.xlsx(as.data.frame(df.celltype.major), file = paste0(mydir, 'stat.cell_number.perSample.xlsx'), sheetName = 'Major cell type', append = T, row.names = F)
+
+df.celltype.subtypeT = q.all@meta.data %>% select(Sample, final_cell_type_major) %>% group_by(Sample, final_cell_type_major) %>% 
+  summarise(N_cells = n()) %>% spread(final_cell_type_major, N_cells, fill = 0)
+write.xlsx(as.data.frame(df.celltype.subtypeT), file = paste0(mydir, 'stat.cell_number.perSample.xlsx'), sheetName = 'Cell type (T+NK)', append = T, row.names = F)
+
+
+# Sample + Tissue
+df.celltype =  q.all@meta.data %>% select(Sample, Tissue, Major_cell_type) %>% 
+  mutate(Celltype = if_else( Major_cell_type %in% c('Malignant','B', 'T', 'NK', 'Myeloid'), Major_cell_type, 'Others')) %>% 
+  group_by(Sample, Tissue, Celltype) %>% summarise(N_cells = n()) %>% 
+  filter(Sample %in% order.sample) %>% 
+  mutate(Sample = factor(Sample, levels = order.sample))
+
+# piechart  - major cell type ----------- 
+library(ggpie) # need version 0.1.0
+
+# plot title = sample
+ggpie(df.celltype  %>%  splitstackshape::expandRows('N_cells', count.is.col = T), 
+              x= Celltype, by = Sample,  
+             border.color="white", label.color="black",percent = T, digits = 1, nrow = 5,
+             offset=0.7, label.size=0, legend=T) +
+  scale_fill_manual(values= col.cell_major)
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 8, height = 6, title = paste0('Major cell composition %'))
+
+# plot title = sample+tissue
+ggpie(df.celltype  %>%  splitstackshape::expandRows('N_cells', count.is.col = T) %>% mutate(Sample_tissue = str_c(Sample, Tissue, sep = '_')), 
+              x= Celltype, by = Sample_tissue, 
+             border.color="white", label.color="black",percent = T, digits = 1, nrow = 5,
+             offset=0.7, label.size=0, legend=T) +
+  scale_fill_manual(values= col.cell_major)
+
+
+# plot title = tissue + sample
+ggpie(df.celltype  %>%  splitstackshape::expandRows('N_cells', count.is.col = T) %>% mutate(Sample_tissue = str_c(Tissue, Sample, sep = '_')), 
+              x= Celltype, by = Sample_tissue, 
+             border.color="white", label.color="black",percent = T, digits = 1, nrow = 5,
+             offset=0.7, label.size=0, legend=T) +
+  scale_fill_manual(values= col.cell_major)
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 10, height = 6, title = paste0('Major cell composition %'))
+
+
+
+# Group + Tissue   --------- 
+df.celltype.group =  q.all@meta.data %>% select(Cancer_type, Sample, Tissue, Major_cell_type) %>% 
+  filter(Tissue %in% c('BM', 'LN'), Sample != 'NC01', Major_cell_type != 'Malignant') %>% 
+   mutate(Celltype = if_else( Major_cell_type %in% c('B', 'T', 'NK', 'Myeloid'), Major_cell_type, 'Others')) %>% 
+  group_by(Cancer_type,Sample, Tissue, Celltype) %>% summarise(N_cells = n()) %>% 
+  # normalize TME cells to 10000 cells per sample for group comparsion %>% 
+  ungroup() %>% group_by(Sample) %>% mutate(Total_cells = sum(N_cells)) %>% 
+  mutate(Normal_N = N_cells * 10000 / Total_cells) %>% 
+  # compare groups (Tissue + Cancer_type)
+  ungroup() %>% mutate(Group = str_c(Tissue, '_', Cancer_type)) %>% 
+  group_by(Group,Celltype) %>% summarise(N_cells_group = sum(Normal_N)) 
+
+# piechart  - major cell type ----------- 
+library(ggpie) # need version 0.1.0
+
+# plot title = sample
+ggpie(df.celltype.group  %>%  splitstackshape::expandRows('N_cells_group', count.is.col = T), 
+              x= Celltype, by = Group,  
+             border.color="white", label.color="black",percent = T, digits = 1, nrow = 2,
+             offset=0.7, label.size=0, legend=T) +
+  scale_fill_manual(values= col.cell_major)
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 8, height = 6, title = paste0('Major cell composition %'))
+```
+
+
+
+
+
+## Dimplot
+```{r dimplot}
+w = 6
+h = 6
+reduction = 'umap'
+
+
+ggsave( DimPlot(q.all, reduction = reduction, group.by = "final_cell_type_major", repel = T, label = T, label.size = 7) + NoAxes()  +  
+          labs(title = paste0('Cell type for CCC') ) +  NoLegend() + 
+          scale_color_manual(values = col.final_cell_type_major) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir ,reduction, '.cell type final major.T.L.png'), w = w, h = h)
+
+ggsave( DimPlot(q.all, reduction = reduction, group.by = "Donor", repel = T, label = F, label.size = 7) + NoAxes()  +  
+          labs(title = paste0('by Donor') ) +  NoLegend() + 
+          scale_color_manual(values = col.sample) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(mydir ,reduction, '.Donor.png'), w = w, h = h)
+
+```
+
+## major cell type  for Cell talks
+
+```{r set data -- Malignant+NKTcellsubtype}
+q.cc <- readRDS('Matrix/10.allpatient.cells.forCCC.rds')
+
+table(q.cc$final_cell_type_major) # cell type 
+table(q.cc$final_cell_type_major) # cell type 
+# perhaps need to remove subclusters with a few cell number
+Idents(q.cc) <- "final_cell_type_major"
+table(q.cc@active.ident) # cell type
+
+q.cc@active.assay <- "SCT"
+q.cc@active.assay
+
+```
+
+
+
+
+```{r set data -- Malignant.subtype+NKTcellsubtype}
+q.cc <- readRDS('Matrix/10.allpatient.cells.forCCC.rds')
+
+table(q.cc$final_cell_type_major.subcluster) # cell type 
+# perhaps need to remove subclusters with a few cell number
+Idents(q.cc) <- "final_cell_type_major.subcluster"
+table(q.cc@active.ident) # cell type
+
+q.cc@active.assay <- "SCT"
+q.cc@active.assay
+
+```
+
+
+## plot cell composition
+```{r barplot of cell composition}
+plot.celltype.sample  = q.cc@meta.data %>% select(Sample, Celltype = final_cell_type_major) %>% 
+  group_by(Sample, Celltype ) %>% summarise(Cell_number = n()) %>% 
+  left_join(phe) 
+
+# barplot
+ggbarplot(plot.celltype.sample ,
+          x = 'Sample', y = 'Cell_number', fill = 'Celltype',  position = position_fill(),
+          x.text.angle = 90, legend = 'right', order = order.sample,
+          palette = c(col.cell_major, color.T2, col.mo)) 
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 8, height = 5)
+
+# barplot
+ggbarplot(plot.celltype.sample %>%  filter(Celltype != 'Malignant' ),
+          x = 'Sample', y = 'Cell_number', fill = 'Celltype',  position = position_fill(),
+          x.text.angle = 90, legend = 'right', order = order.sample,
+          palette = c(col.cell_major, color.T2, col.mo)) 
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 8, height = 5)
+
+
+# pie
+ggpie(plot.celltype.sample  %>%  splitstackshape::expandRows('Cell_number', count.is.col = T), 
+              x= Celltype, by = Sample,  
+             border.color="white", label.color="black",percent = T, digits = 1, nrow = 5,
+             offset=0.7, label.size=0, legend=T) +
+  scale_fill_manual(values=  c(col.cell_major, color.T2, col.mo))
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 8, height = 6, title = paste0('Major cell composition %'))
+
+
+# Group + Tissue   --------- 
+df.celltype.group =  q.all@meta.data %>% select(Cancer_type, Sample, Tissue, final_cell_type_major) %>% 
+  filter(Tissue %in% c('BM', 'LN'), Sample != 'NC01', final_cell_type_major != 'Malignant') %>% 
+   mutate(Celltype = final_cell_type_major) %>% 
+  group_by(Cancer_type,Sample, Tissue, Celltype) %>% summarise(N_cells = n()) %>% 
+  # normalize TME cells to 10000 cells per sample for group comparsion %>% 
+  ungroup() %>% group_by(Sample) %>% mutate(Total_cells = sum(N_cells)) %>% 
+  mutate(Normal_N = N_cells * 10000 / Total_cells) %>% 
+  # compare groups (Tissue + Cancer_type)
+  ungroup() %>% mutate(Group = str_c(Cancer_type,'_', Tissue )) %>% 
+  group_by(Group,Celltype) %>% summarise(N_cells_group = sum(Normal_N)) 
+
+# show >10% cell types
+df_selected <- df.celltype.group %>% group_by(Group) %>% 
+  arrange(desc(N_cells_group)) %>% 
+  mutate(total_value = sum(N_cells_group) ) %>%
+  filter(N_cells_group >= 0.1 * total_value)
+
+
+
+# plot title = sample
+ggpie(df.celltype.group  %>%  splitstackshape::expandRows('N_cells_group', count.is.col = T), 
+              x= Celltype, by = Group,  
+             border.color="white", label.color="black",percent = T, digits = 1, nrow = 2,
+             offset=0.7, label.size=0, legend=T) +
+  scale_fill_manual(values= col.final_cell_type_major)
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 8, height = 6, title = paste0('Major cell composition %'))
+
+
+
+```
+
+
+```{r cell% boxplot}
+# boxplot
+df.celltype.group =  q.all@meta.data %>% 
+  filter(Tissue %in% c('BM', 'LN'), Sample != 'NC01', Major_cell_type %in% c('T','NK','B', 'Myeloid')) %>% 
+   transmute(Sample, Celltype = final_cell_type_major) %>% 
+  group_by( Sample, Celltype) %>% summarise(N_cells = n()) %>% 
+  ungroup() %>% group_by(Sample) %>% mutate(Total_cells = sum(N_cells), pct_bySample = N_cells /Total_cells * 100) %>% 
+   select(Sample, Celltype, pct_bySample) %>% spread(Celltype, pct_bySample, fill = 0) %>%  # supplies 0
+  gather(Celltype, pct_bySample, -Sample) %>% left_join(phe %>% select(Sample, Tissue, Cancer_type))
+
+
+select.group <- df.celltype.group %>%
+  group_by(Celltype, Tissue, Cancer_type) %>% 
+  filter(pct_bySample >0) %>% 
+  summarise(n = n(), .groups = 'drop') %>%   # Count number of observations per group
+  spread(Cancer_type, n) %>% 
+  filter(Health > 2 , MCL >2 )
+
+p.stat <- select.group %>% left_join(df.celltype.group) %>% 
+  group_by(Celltype, Tissue) %>% wilcox_test( pct_bySample ~ Cancer_type ) %>%
+  mutate(y.position = 50, group1 = 'Health', group2 = 'MCL') %>% 
+  add_significance(p.col = 'p')
+
+
+df.celltype.group$Celltype = factor(df.celltype.group$Celltype, levels = order.final_cell_type_major)
+ggplot(df.celltype.group ) +
+  geom_boxplot(aes(x = Cancer_type, y = pct_bySample, fill = Cancer_type), outlier.shape = NA) +
+  facet_grid( Tissue ~ Celltype, scales = 'free_y') +
+  scale_fill_manual(values = col.cancer_type) +
+  theme_bw() + 
+  theme(panel.background = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  NoLegend() + 
+  stat_pvalue_manual(p.stat, label = "p.signif", hide.ns = T)
+
+
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 10, height = 4, title = paste0('Major cell composition %'))
+
+
+
+```
+
+
+
+
+```{r compare NC&MCL composition -- noB}
+# piechart  - major cell type ----------- 
+library(ggpie) # need version 0.1.0
+
+
+# Group + Tissue   --------- 
+df.celltype.group.noB =  q.all@meta.data %>% select(Cancer_type, Sample, Tissue, final_cell_type_major) %>% 
+  filter(Tissue %in% c('BM', 'LN'), Sample != 'NC01', !final_cell_type_major %in% c('B', 'Malignant')) %>% 
+   mutate(Celltype = final_cell_type_major) %>% 
+  group_by(Cancer_type,Sample, Tissue, Celltype) %>% summarise(N_cells = n()) %>% 
+  # normalize TME cells to 10000 cells per sample for group comparsion %>% 
+  ungroup() %>% group_by(Sample) %>% mutate(Total_cells = sum(N_cells)) %>% 
+  mutate(Normal_N = N_cells * 10000 / Total_cells) %>% 
+  # compare groups (Tissue + Cancer_type)
+  ungroup() %>% mutate(Group = str_c(Cancer_type,'_', Tissue )) %>% 
+  group_by(Group,Celltype) %>% summarise(N_cells_group = sum(Normal_N)) 
+
+# show >10% cell types
+df_selected <- df.celltype.group.noB %>% group_by(Group) %>% 
+  arrange(desc(N_cells_group)) %>% 
+  mutate(total_value = sum(N_cells_group) ) %>%
+  filter(N_cells_group >= 0.1 * total_value)
+
+
+
+# plot title = sample
+ggpie(df.celltype.group.noB  %>%  splitstackshape::expandRows('N_cells_group', count.is.col = T), 
+              x= Celltype, by = Group,  
+             border.color="white", label.color="black",percent = T, digits = 1, nrow = 2,
+             offset=0.7, label.size=0, legend=T) +
+  scale_fill_manual(values= col.final_cell_type_major)
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 8, height = 6, title = paste0('Major cell composition % (no B)'))
+
+
+# boxplot ---------------------
+df.celltype.group =  q.all@meta.data %>% 
+  filter(Tissue %in% c('BM', 'LN'), Sample != 'NC01', Major_cell_type %in% c('T','NK', 'Myeloid')) %>% 
+   transmute(Sample, Celltype = final_cell_type_major) %>% 
+  group_by( Sample, Celltype) %>% summarise(N_cells = n()) %>% 
+  ungroup() %>% group_by(Sample) %>% mutate(Total_cells = sum(N_cells), pct_bySample = N_cells /Total_cells * 100) %>% 
+   select(Sample, Celltype, pct_bySample) %>% spread(Celltype, pct_bySample, fill = 0) %>%  # supplies 0
+  gather(Celltype, pct_bySample, -Sample) %>% left_join(phe %>% select(Sample, Tissue, Cancer_type))
+
+
+select.group <- df.celltype.group %>%
+  group_by(Celltype, Tissue, Cancer_type) %>% 
+  filter(pct_bySample >0) %>% 
+  summarise(n = n(), .groups = 'drop') %>%   # Count number of observations per group
+  spread(Cancer_type, n) %>% 
+  filter(Health > 2 , MCL >2 )
+
+p.stat <- select.group %>% left_join(df.celltype.group) %>% 
+  group_by(Celltype, Tissue) %>% wilcox_test( pct_bySample ~ Cancer_type ) %>%
+  mutate(y.position = 50, group1 = 'Health', group2 = 'MCL') %>% 
+  add_significance(p.col = 'p')
+
+
+df.celltype.group$Celltype = factor(df.celltype.group$Celltype, levels = order.final_cell_type_major)
+ggplot(df.celltype.group ) +
+  geom_boxplot(aes(x = Cancer_type, y = pct_bySample, fill = Cancer_type), outlier.shape = NA) +
+  facet_grid( Tissue ~ Celltype, scales = 'free_y') +
+  scale_fill_manual(values = col.cancer_type) +
+  theme_bw() + 
+  theme(panel.background = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  NoLegend() + 
+  stat_pvalue_manual(p.stat, label = "p.signif", hide.ns = T)
+
+
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 10, height = 4, title = paste0('Major cell composition % (noB)'))
+
+
+```
+
+
+
+
+
+
+```{r cell% lineplot level2}
+# stat : sample-specific clusters
+stat.l2.sample = plot.celltype.sample %>% 
+  group_by(Celltype) %>% mutate(Total_cell_byCellType =sum(Cell_number)) %>% 
+  mutate(pct_byCellType = Cell_number/Total_cell_byCellType * 100) %>% 
+  ungroup() %>% group_by(Sample) %>% mutate(Total_cell_bySample =sum(Cell_number)) %>% 
+  mutate(pct_bySample = Cell_number/Total_cell_bySample * 100) 
+
+
+# box plot of BM samples Diagnosis vs Untreateed vs Relapse
+sample.BM.DR <- stat.l2.sample %>% filter(Tissue == 'BM', Cancer_type == 'MCL') %>% select(Sample, Sampling_time)
+p.stat <- stat.l2.sample %>% filter(Sample %in% sample.BM.DR$Sample) %>% 
+  select(Celltype, Sample, Sampling_time, pct_bySample) %>% 
+  group_by(Celltype) %>% wilcox_test( pct_bySample ~ Sampling_time) %>% mutate(y.position = 50, group1 = Celltype, group2 = Celltype) %>% 
+  add_significance(p.col = 'p')
+
+ggboxplot(stat.l2.sample %>% filter(Sample %in% sample.BM.DR$Sample) , 
+          x = 'Celltype', y = 'pct_bySample', fill = 'Sampling_time', palette = col.samtime, outlier.shape = NA, x.text.angle = 90) +
+  stat_pvalue_manual(p.stat, label = "p.signif", hide.ns = T)
+eoffice::topptx(last_plot(), filename = paste0(mydir, 'plot.pptx'), append = T, width = 8, height = 6, title = 'BM samples')
+
+# box plot of BM samples Primary vs Relapse
+
+p.stat <- stat.l2.sample %>% filter(Sample %in% sample.BM.DR$Sample) %>% 
+  select(Celltype, Sample, Sampling_time, pct_bySample) %>% 
+  mutate(Sampling_time = if_else(Sampling_time == 'Relapse', 'Relapse', 'Primary' )) %>% 
+  group_by(Celltype) %>% wilcox_test( pct_bySample ~ Sampling_time) %>% mutate(y.position = 50, group1 = Celltype, group2 = Celltype) %>% 
+  add_significance(p.col = 'p')
+ggboxplot(stat.l2.sample %>% filter(Sample %in% sample.BM.DR$Sample) %>% mutate(Sampling_time = if_else(Sampling_time == 'Relapse', 'Relapse', 'Primary' ))  , 
+          x = 'Celltype', y = 'pct_bySample', fill = 'Sampling_time', palette = col.samtime, outlier.shape = NA, x.text.angle = 90) +
+  stat_pvalue_manual(p.stat, label = "p.signif", hide.ns = T)
+eoffice::topptx(last_plot(), filename = paste0(mydir, 'plot.pptx'), append = T, width = 8, height = 5, title = 'BM samples')
+
+
+# lineplot of paired D/R samples
+group_comp = read_tsv('sample_compare.xls')
+df_exp = group_comp %>% gather(Time, Sample, -Donor, -Group,-Treatment, -ID) %>% 
+  left_join(stat.l2.sample %>% select(Sample, Celltype, pct_bySample), by = 'Sample')
+
+# plot seperated meta_program and treatment group
+stat_p = df_exp %>% group_by(Treatment, Celltype) %>% 
+  wilcox_test(pct_bySample ~ Time, paired = T)  %>% 
+  add_xy_position()
+
+ggplot(df_exp, aes(x = Time, y = pct_bySample, group = ID)) +
+  geom_line(aes(color = Donor)) +
+  scale_color_manual(values =col.patient ) + 
+   new_scale_color() +
+  geom_point(aes(color = Sample)) +
+  scale_color_manual(values = col.sample ) + 
+  facet_grid(Celltype ~ Treatment, scales = 'free_y') +
+  theme_bw() +
+  stat_pvalue_manual(stat_p) +
+  # stat_compare_means(comparisons = list(c('Time1', 'Time2')), paired = T, label = '..p..') + 
+  scale_y_continuous(expand=expand_scale(mult=c(0.05, 0.1)))
+
+eoffice::topptx(last_plot(),  filename = paste0(mydir, 'plot.pptx'), append = T, width = 4, height = 9, title = paste0('paired comparsion'))
+
+# plot seperated meta_program but colored by treatment group -----
+
+ggplot(df_exp, aes(x = Time, y = pct_bySample, group = ID)) +
+  # geom_line(aes(color = Donor, linetype = Treatment)) +
+  geom_line(aes(color = Treatment)) +
+  scale_color_manual(values =col.treatment ) + 
+  new_scale_color() +
+  geom_point(color = 'grey') + 
+  # geom_point(aes(color = Sample)) +
+  # scale_color_manual(values = col.sample )+ 
+  facet_wrap(~ Celltype,  scale = 'free_y') +
+  theme_bw() +
+  stat_compare_means(comparisons = list(c('Time1', 'Time2')), paired = T, label = '..p..') + 
+  scale_y_continuous(expand=expand_scale(mult=c(0.05, 0.1)))
+
+eoffice::topptx(last_plot(),  filename = paste0(mydir, 'plot.pptx'), append = T, width = 6, height = 6, title = paste0('paired comparsion -no sample color'))
+
+
+
+```
+
+
+
+
+
+
+
+# Cell Talk 
+
+```{r chose resource}
+# show_resources() 
+select_resource(c('OmniPath')) %>% dplyr::glimpse()   # OmniPath integrate more than 20 resources
+ref.omnipath = select_resource(c('OmniPath'))[[1]] #4820  could check the costimulator and inhibitor from the table
+ref.cellphdb = select_resource(c('CellPhoneDB'))[[1]] #1223  could check the costimulator and inhibitor from the table
+ref.curate = get_curated_omni(curated_resources = c("CellPhoneDB", "CellChatDB", "ICELLNET", "connectomeDB2020",  "CellTalkDB"))
+ref.conseuse = select_resource(c('Consensus'))[[1]] #4701
+ref.italk = select_resource(c('iTALK'))[[1]] #2566
+
+ref.omnipath.immue = ref.omnipath %>% inner_join(ref.lr %>% select(source_genesymbol = Ligand, target_genesymbol = Receptor) ) #150
+ref.cellphdb.immue = ref.cellphdb %>% inner_join(ref.lr %>% select(source_genesymbol = Ligand, target_genesymbol = Receptor) ) # 87
+ref.omnipath.f = ref.omnipath %>% filter(consensus_score_intercell_source > 10,  consensus_score_intercell_target > 10 ) #431
+ref.omnipath.f %>%  inner_join(ref.lr %>% select(source_genesymbol = Ligand, target_genesymbol = Receptor) )  %>% nrow() #30
+```
+
+
+```{r filter}
+# stat for the cell proportion > 1% in each sample
+stat.celltype = q.cc@meta.data %>% 
+  mutate(Celltype  =  final_cell_type_major) %>%
+  # mutate(Celltype  =  final_cell_type_major.subcluster) %>%
+  group_by(Celltype, Sample) %>% summarise(n = n()) %>% 
+  ungroup() %>% group_by(Sample) %>% 
+  mutate(pct = n / sum(n) * 100)  %>% filter(pct > 1) %>%  # the small population were not analyzed
+  mutate(N_celltype = n_distinct(Celltype)) %>% filter(N_celltype > 1) %>%  # if no TME cell type , samples would not be analyzed
+  left_join(phe %>% select(Sample, Donor)) 
+write_tsv(stat.celltype, paste0(mydir, '/stat.cellpctMT1.final_cell_type_major.xls'))
+# write_tsv(stat.celltype, 'CellTalk/stat.cellpctMT1.final_cell_type_major_subcluster.xls')
+stat.celltype = read_tsv('CellTalk/stat.cellpctMT1.final_cell_type_major.xls') 
+```
+
+
+## cell talk - sperate NC and MCL -- 
+```{r plot -BM/LN samples }
+my.idents = 'final_cell_type_major' # Malignant + NKT.celltype
+q.cc = load('CellTalk_merged/10.mergedCells.forCCC.rds')
+
+# filter out <1% cell type in each sample
+stat.celltype = read_tsv('CellTalk_merged//stat.cellpctMT1.final_cell_type_major.xls') 
+
+
+
+q.cc.sce = Seurat::as.SingleCellExperiment(q.cc)
+my_dir = 'CellTalk_merged/Disease_seperate/'
+dir.create(my_dir)
+  
+  
+# all source and all method ----- 
+liana.major.BM <- liana_bysample(sce = q.cc.sce,
+                      sample_col = "Cancer_type",
+                      idents_col = my.idents,
+                      #method = "sca", # we use SingleCellSignalR's score alone
+                      expr_prop = 0.1, # expression proportion threshold
+                      inplace=FALSE, # saves inplace to sce
+                      return_all = FALSE # whether to return non-expressed interactions
+                      )
+
+saveRDS(liana.major.BM, paste0(my_dir, paste0('liana.', my.idents, '.rds')))
+
+
+
+# aggregate & save
+lapply(names(liana.major.BM), FUN =  function(x) write.xlsx(liana_aggregate(liana.major.BM[[x]]) %>% as.data.frame(), 
+                                                             file = paste0(mydir, 'CCC.', my.idents,'.xlsx'), sheetName = x, row.names = F, append = T))
+map(names(liana.major.BM), .f = function(x) write_tsv(liana_aggregate(liana.major.BM[[x]]) %>% as.data.frame(), file = paste0(mydir, 'CCC.', my.idents,'.', x, '.xls') ))
+
+
+# cellphoneDB & intergrate all samples
+liana.cellph.BM <- map_df(names(liana.major.BM), .f = function(x)  liana.major.BM[[x]]$cellphonedb %>% mutate(Cancer_type = x))
+write_tsv(liana.cellph.BM, file = paste0(mydir, 'CCC.', my.idents,'.', 'CellPhoneDB.xls'))
+
+
+# filter cellphoneDB\
+liana.cellph.BM.f <- liana.cellph.BM %>% 
+  filter(pvalue <= 0.05) %>% 
+  inner_join(ref.lr %>% select(ligand.complex = Ligand, receptor.complex = Receptor)) # filtered by  xiaofei' L-R pairs
+
+
+
+# state
+liana.cellph.BM.f %>% select(ligand.complex, receptor.complex) %>% distinct() %>% nrow() #  cellphoneDB:  32
+nrow(liana.cellph.BM.f) # cellphoneDB:  2432
+
+# stat --- 
+write_tsv(liana.cellph.BM.f, paste0(my_dir, 'L-R.pairs.filtered.tsv'))
+liana.cellph.BM.f = read_tsv(paste0(my_dir, 'L-R.pairs.filtered.tsv')) %>% 
+   mutate(source = if_else(Cancer_type == 'Health' & source == 'B', 'Malignant', source),
+         target = if_else(Cancer_type == 'Health' & target == 'B', 'Malignant', target))
+
+
+
+
+# dotplot --- 
+source.cell = 'Malignant'
+target.cell = liana.cellph.BM.f %>% filter(target != 'Malignant' ) %>% pull(target) %>% unique()
+
+mydf = liana.cellph.BM.f %>% filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'L-R') %>% 
+    mutate(connection = str_c(ligand, receptor, sep = '->')) %>% 
+  bind_rows(liana.cellph.BM.f %>% select(tmp = source, source = target, target = source, everything()) %>% 
+              filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'R-L') %>% 
+                mutate(connection = str_c(receptor, ligand, sep = '<-')) ) %>% 
+  arrange(Direction)
+
+
+mydf$target = factor(mydf$target, levels = order.final_cell_type_major)
+mydf$connection = factor(mydf$connection, levels = mydf %>% select(connection, Direction) %>% distinct() %>% arrange(Direction) %>% pull(connection) )
+mydf$tissue = factor(mydf$Cancer_type, levels = c('MCL', 'Health'))
+mydf$lr.mean = if_else(mydf$lr.mean > quantile(mydf$lr.mean,0.99), quantile(mydf$lr.mean,0.99), mydf$lr.mean) # reduce the color scale bias from outliers
+
+ggplot(mydf ) +
+  geom_point(aes(x = target, y = connection, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  facet_grid(~ Cancer_type) + 
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+  scale_size(range = c(1, 4)) + 
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+eoffice::topptx(last_plot(), filename = paste0(my_dir, 'plot.pptx'), append = T, width = 12, height = 5, title = 'Maligant - other cells')
+
+ggsave(last_plot(), filename = paste0(my_dir, 'Dotplot.Maligant-others.facetByGroup.pdf'),  width = 10, height = 5)
+
+
+ggplot(mydf ) +
+  geom_point(aes(x = Cancer_type, y = connection, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  facet_grid(~ target ) + 
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+  scale_size(range = c(1, 4)) + 
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+eoffice::topptx(last_plot(), filename = paste0(my_dir, 'plot.pptx'), append = T, width = 12, height =4, title = 'Maligant - other cells')
+
+ggsave(last_plot(), filename = paste0(my_dir, 'Dotplot.Maligant-others.facetByCelltype.pdf'),  width = 10, height = 5)
+
+
+```
+
+
+## Cell talk - seperated BM / LN  and MCL/NC
+
+### filter and plot
+```{r plot -BM/LN samples }
+my.idents = 'final_cell_type_major' # Malignant + NKT.celltype
+
+q.cc <- read_rds('CellTalk_merged/10.mergedCells.forCCC.rds')
+# filter out <1% cell type in each sample
+stat.celltype = read_tsv('CellTalk_merged//stat.cellpctMT1.final_cell_type_major.xls') 
+
+# q.cc = readRDS('Matrix/10.allpatient.cells.forCCC.correctSample.rds') 
+q.cc.tissue =  subset(q.cc, subset = Tissue %in% c('BM','LN'))
+
+
+q.cc.tissue@meta.data = q.cc.tissue@meta.data %>% 
+  mutate(tissue = str_c(Cancer_type, '_', Tissue))
+rownames(q.cc.tissue@meta.data) =  q.cc.tissue$CellBarcode
+
+stat.celltype.bm = q.cc.tissue@meta.data %>% group_by(tissue, final_cell_type_major) %>% summarise(n = n() ) %>% 
+  ungroup() %>% group_by(tissue) %>% mutate(total = sum(n)) %>% mutate(pct = n/total) 
+
+
+q.cc.sce = Seurat::as.SingleCellExperiment(q.cc.tissue)
+my_dir = 'CellTalk_merged/Tissue_seperate/'
+dir.create(my_dir)
+  
+  
+# all source and all method ----- 
+liana.major.tissue <- liana_bysample(sce = q.cc.sce,
+                      sample_col = "tissue",
+                      idents_col = my.idents,
+                      #method = "sca", # we use SingleCellSignalR's score alone
+                      expr_prop = 0.1, # expression proportion threshold
+                      inplace=FALSE, # saves inplace to sce
+                      return_all = FALSE # whether to return non-expressed interactions
+                      )
+
+saveRDS(liana.major.tissue, paste0(my_dir, paste0('liana.', my.idents, '.rds')))
+
+
+
+# aggregate & save
+lapply(names(liana.major.tissue), FUN =  function(x) write.xlsx(liana_aggregate(liana.major.tissue[[x]]) %>% as.data.frame(), 
+                                                             file = paste0(mydir, 'CCC.', my.idents,'.xlsx'), sheetName = x, row.names = F, append = T))
+map(names(liana.major.tissue), .f = function(x) write_tsv(liana_aggregate(liana.major.tissue[[x]]) %>% as.data.frame(), file = paste0(mydir, 'CCC.', my.idents,'.', x, '.xls') ))
+
+
+# cellphoneDB & intergrate all samples
+liana.cellph.tissue <- map_df(names(liana.major.tissue), .f = function(x)  liana.major.tissue[[x]]$cellphonedb %>% mutate(tissue = x))
+write_tsv(liana.cellph.tissue, file = paste0(mydir, 'CCC.', my.idents,'.', 'CellPhoneDB.xls'))
+
+
+# filter cellphoneDB\
+liana.cellph.tissue.f <- liana.cellph.tissue %>% 
+  filter(pvalue <= 0.05) %>% 
+  inner_join(ref.lr %>% select(ligand.complex = Ligand, receptor.complex = Receptor)) # filtered by  xiaofei' L-R pairs
+
+
+
+# state
+liana.cellph.tissue.f %>% select(ligand.complex, receptor.complex) %>% distinct() %>% nrow() #  cellphoneDB:  32
+nrow(liana.cellph.tissue.f) # cellphoneDB:  2432
+
+# stat --- 
+write_tsv(liana.cellph.tissue.f, paste0(my_dir, 'L-R.pairs.filtered.tsv'))
+liana.cellph.tissue.f = read_tsv(paste0(my_dir, 'L-R.pairs.filtered.tsv')) %>% 
+  mutate(source = if_else(grepl( 'Health', tissue) & source == 'B', 'Malignant', source),
+         target = if_else(grepl( 'Health', tissue)& target == 'B', 'Malignant', target))
+
+# dotplot --- 
+source.cell = 'Malignant'
+target.cell = liana.cellph.tissue.f %>% filter(target != 'Malignant' ) %>% pull(target) %>% unique()
+
+mydf = liana.cellph.tissue.f %>% filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'L-R') %>% 
+    mutate(connection = str_c(ligand, receptor, sep = '->')) %>% 
+  bind_rows(liana.cellph.tissue.f %>% select(tmp = source, source = target, target = source, everything()) %>% 
+              filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'R-L') %>% 
+                mutate(connection = str_c(receptor, ligand, sep = '<-')) ) %>% 
+  arrange(Direction)
+
+
+mydf$target = factor(mydf$target, levels = order.final_cell_type_major)
+mydf$connection = factor(mydf$connection, levels = mydf %>% select(connection, Direction) %>% distinct() %>% arrange(Direction) %>% pull(connection) )
+mydf$tissue = factor(mydf$tissue, levels = c('Health_BM','MCL_BM', 'MCL_LN', 'Health_LN'))
+mydf$lr.mean = if_else(mydf$lr.mean > quantile(mydf$lr.mean,0.99), quantile(mydf$lr.mean,0.99), mydf$lr.mean) # reduce the color scale bias from outliers
+
+
+ggplot(mydf ) +
+  geom_point(aes(x = target, y = connection, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  facet_grid(~ tissue) + 
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+  scale_size(range = c(1, 4)) + 
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+eoffice::topptx(last_plot(), filename = paste0(my_dir, 'plot.pptx'), append = T, width = 12, height = 5, title = 'Maligant - other cells')
+
+ggsave(last_plot(), filename = paste0(my_dir, 'Dotplot.Maligant-others.pdf'),  width = 10, height = 5)
+
+
+ggplot(mydf ) +
+  geom_point(aes(x = tissue, y = connection, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  facet_wrap(~ target,  nrow = 1) + 
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+  scale_size(range = c(1, 4)) + 
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+eoffice::topptx(last_plot(), filename = paste0(my_dir, 'plot.pptx'), append = T, width = 12, height = 5, title = 'Maligant - other cells')
+
+ggsave(last_plot(), filename = paste0(my_dir, 'Dotplot.Maligant-others.facetByCelltype.pdf'),  width = 10, height = 5)
+
+
+```
+
+
+
+
+## ***Cell talk - seperated primary/untreatment/relapse  ***
+
+### filter and plot
+```{r plot -primary/relapse samples }
+my.idents = 'final_cell_type_major' # Malignant + NKT.celltype
+
+my_dir = 'CellTalk_merged/pvsR_MethodCellphone_OminPathDB/'
+dir.create(my_dir)
+
+q.cc.sce = Seurat::as.SingleCellExperiment(q.cc)
+
+# all source and all method ----- 
+liana.major.DR <- liana_bysample(sce = q.cc.sce,
+                      sample_col = "Sampling_time",
+                      idents_col = my.idents,
+                      #method = "sca", # we use SingleCellSignalR's score alone
+                      expr_prop = 0.1, # expression proportion threshold
+                      inplace=FALSE, # saves inplace to sce
+                      return_all = FALSE # whether to return non-expressed interactions
+                      )
+
+saveRDS(liana.major.DR, paste0(mydir, paste0('liana.sepPR', my.idents, '.rds')))
+
+
+
+# aggregate & save
+lapply(names(liana.major.DR), FUN =  function(x) write.xlsx(liana_aggregate(liana.major.DR[[x]]) %>% as.data.frame(), 
+                                                             file = paste0(mydir, 'CCC.', my.idents,'.xlsx'), sheetName = x, row.names = F, append = T))
+map(names(liana.major.DR), .f = function(x) write_tsv(liana_aggregate(liana.major.DR[[x]]) %>% as.data.frame(), file = paste0(mydir, 'CCC.', my.idents,'.', x, '.xls') ))
+
+
+# cellphoneDB & intergrate all samples
+liana.cellph.DR <- map_df(names(liana.major.DR), .f = function(x)  liana.major.DR[[x]]$cellphonedb %>% mutate(Sampling_time = x))
+write_tsv(liana.cellph.DR, file = paste0(mydir, 'CCC.', my.idents,'.', 'DvsR.CellPhoneDB.xls'))
+
+
+# filter cellphoneDB\
+liana.cellph.DR.f <- liana.cellph.DR %>% filter(Sampling_time != 'Progress') %>% 
+  filter(pvalue <= 0.05) %>% 
+  inner_join(ref.lr %>% select(ligand.complex = Ligand, receptor.complex = Receptor)) # filtered by  xiaofei' L-R pairs
+
+
+
+# state
+liana.cellph.DR.f %>% select(ligand.complex, receptor.complex) %>% distinct() %>% nrow() #  cellphoneDB:  32
+nrow(liana.cellph.DR.f) # cellphoneDB:  2432
+
+# stat --- 
+
+write_tsv(liana.cellph.DR.f, paste0(my_dir, 'L-R.pairs.filtered.tsv'))
+liana.cellph.DR.f = read_tsv(paste0(my_dir, 'L-R.pairs.filtered.tsv'))
+
+# dotplot --- 
+source.cell = 'Malignant'
+target.cell = liana.cellph.DR.f %>% filter(target != 'Malignant' ) %>% pull(target) %>% unique()
+
+mydf = liana.cellph.DR.f %>% filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'L-R') %>% 
+    mutate(connection = str_c(ligand, receptor, sep = '->')) %>% 
+  bind_rows(liana.cellph.DR.f %>% select(tmp = source, source = target, target = source, everything()) %>% 
+              filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'R-L') %>% 
+                mutate(connection = str_c(receptor, ligand, sep = '<-')) ) %>% 
+  arrange(Direction)
+
+
+mydf$target = factor(mydf$target, levels = order.final_cell_type_major)
+mydf$connection = factor(mydf$connection, levels = mydf %>% select(connection, Direction) %>% distinct() %>% arrange(Direction) %>% pull(connection) )
+mydf$Sampling_time = factor(mydf$Sampling_time, levels = c('Primary', 'Pretreatment', 'Relapse'))
+
+
+ggplot(mydf ) +
+  geom_point(aes(x = Sampling_time, y = connection, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  facet_grid(~ target) + 
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+  scale_size(range = c(1, 4)) + 
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+eoffice::topptx(last_plot(), filename = paste0(my_dir, 'plot.pptx'), append = T, width = 12, height = 5, title = 'Maligant - other cells')
+
+ggsave(last_plot(), filename = paste0(my_dir, 'Dotplot.Maligant-others.pdf'),  width = 15, height = 5)
+
+```
+
+
+
+```{r DB only using xiaofei's pairs}
+my_dir = 'CellTalk/CellPhoneDB_160LR/'
+liana.major.custom <- liana_wrap(q.cc, expr_prop = 0.1, idents_col = 'final_cell_type_major', method = 'cellphonedb' , resource =  c('custom'), external_resource = ref.omnipath.immue) # xiaofei's method, 160 immune-related L_R pairs, using cellphoneDB method , and filter by prop > 0.1 and q<0.05
+
+write_tsv(liana.major.custom, paste0(my_dir, 'Allsample.CCC.nofilter.tsv'))
+
+liana.major.custom.f = liana.major.custom %>% filter(pvalue <= 0.05)
+
+# stat 
+liana.major.custom.f %>% select(ligand.complex, receptor.complex) %>% distinct() %>% nrow() #43
+nrow(liana.major.custom.f) # 2301
+
+# heatmap
+df = liana.major.custom.f %>% mutate(Celltype = source) %>% group_by(Celltype) %>% summarise(N_ligand = n()  ) %>% 
+  full_join(liana.major.custom.f  %>% mutate(Celltype = target) %>% group_by(Celltype) %>% summarise(N_receptor = n() ) )
+df[is.na(df)] = 0
+pheatmap(df %>% column_to_rownames('Celltype'), cluster_rows = F, cluster_cols = F,display_numbers = T,  number_format ="%i",
+         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(15), angle_col = 0, 
+         breaks = seq(0,200, 15), 
+         filename = paste0(my_dir, 'heatmap.stat.Source-Target.pdf'), h = 5, w = 4)
+
+# heatmap of L-R pairs ---- 
+
+# defualt - 
+ph <- heat_freq(liana.major.custom.f ) 
+pdf(file = paste0(my_dir, 'heatmap.L-R.pdf'), h = 8, w = 8)
+ph
+dev.off()
+
+# add clusters
+ph =  liana.major.custom.f  %>% group_by(source ,target) %>% summarise(n = n()) %>% spread(source, n, fill = 0) %>% column_to_rownames('target')
+pheatmap(ph, cluster_rows = T, cluster_cols = T,display_numbers = F,  number_format ="%i",
+         # color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(10), angle_col = 90, 
+         # breaks = seq(0,20, 10), 
+         filename = paste0(my_dir, 'heatmap.Source-Target.pdf'), h = 6, w = 7)
+
+
+# circle
+show.cell = unique(liana.major.custom.f$source)
+chord_freq(liana.major.custom.f, source_groups = show.cell, target_groups = show.cell)
+
+# dotplot --- 
+source.cell = 'Malignant'
+target.cell = liana.major.custom.f %>% filter(target != 'Malignant' ) %>% pull(target) %>% unique()
+
+mydf = liana.major.custom.f %>% filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'L-R') %>% 
+  bind_rows(liana.major.custom.f %>% select(tmp = source, source = target, target = source, everything()) %>% 
+              filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'R-L')) %>% 
+  mutate(connection = str_c(ligand, receptor, sep = '-')) %>% 
+  left_join(ref.omnipath.immue %>% transmute(ligand = source_genesymbol, receptor = target_genesymbol, 
+                                             type = if_else(consensus_stimulation == 1, 'co-stimulation', if_else(consensus_inhibition == 1, 'co-inhibition', 'NA')))) %>% 
+  arrange(Direction, type)
+
+mydf$target = factor(mydf$target, levels = order.final_cell_type_major)
+map_connect = mydf %>% select(Direction, type, connection) %>% distinct()  %>% arrange(Direction, type)
+mydf$connection = factor(mydf$connection, levels = unique(map_connect$connection))
+
+
+ggplot(mydf ) +
+  geom_point(aes(x = target, y = connection, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+eoffice::topptx(last_plot(), filename = paste0(my_dir, 'plot.pptx'), append = T, width = 9, height = 5, title = 'Maligant - other cells')
+
+
+
+```
+
+
+
+
+
+
+## ***Cell talk - seperated primary/untreatment/relapse and BM/LN  ***
+
+### filter and plot
+```{r plot -primary/relapse samples }
+
+my.idents = 'final_cell_type_major' # Malignant + NKT.celltype
+
+q.cc <- read_rds('CellTalk_merged/10.mergedCells.forCCC.rds')
+# filter out <1% cell type in each sample
+stat.celltype = read_tsv('CellTalk_merged//stat.cellpctMT1.final_cell_type_major.xls') 
+
+# q.cc = readRDS('Matrix/10.allpatient.cells.forCCC.correctSample.rds') 
+q.cc.tissue =  subset(q.cc, subset = Tissue %in% c('BM','LN') & Cancer_type == 'MCL')
+
+
+q.cc.tissue@meta.data = q.cc.tissue@meta.data %>% 
+  mutate(Sampling = if_else(Sampling_time == 'Relapse', 'Relapse', 'Primary'), 
+         Group = str_c(Sampling, '_', Tissue))
+rownames(q.cc.tissue@meta.data) =  q.cc.tissue$CellBarcode
+
+stat.celltype.group = q.cc.tissue@meta.data %>% group_by(Group, final_cell_type_major) %>% summarise(n = n() ) %>% 
+  ungroup() %>% group_by(Group) %>% mutate(total = sum(n)) %>% mutate(pct = n/total) 
+
+
+q.cc.sce = Seurat::as.SingleCellExperiment(q.cc.tissue)
+my_dir = 'CellTalk_merged/Tissue_seperate_PR/'
+dir.create(my_dir)
+  
+
+# all source and all method ----- 
+liana.major.DR <- liana_bysample(sce = q.cc.sce,
+                      sample_col = "Group",
+                      idents_col = my.idents,
+                      #method = "sca", # we use SingleCellSignalR's score alone
+                      expr_prop = 0.1, # expression proportion threshold
+                      inplace=FALSE, # saves inplace to sce
+                      return_all = FALSE # whether to return non-expressed interactions
+                      )
+
+saveRDS(liana.major.DR, paste0(mydir, paste0('liana.sepPR', my.idents, '.rds')))
+
+
+
+# aggregate & save
+lapply(names(liana.major.DR), FUN =  function(x) write.xlsx(liana_aggregate(liana.major.DR[[x]]) %>% as.data.frame(), 
+                                                             file = paste0(mydir, 'CCC.', my.idents,'.xlsx'), sheetName = x, row.names = F, append = T))
+map(names(liana.major.DR), .f = function(x) write_tsv(liana_aggregate(liana.major.DR[[x]]) %>% as.data.frame(), file = paste0(mydir, 'CCC.', my.idents,'.', x, '.xls') ))
+
+
+# cellphoneDB & intergrate all samples
+liana.cellph.DR <- map_df(names(liana.major.DR), .f = function(x)  liana.major.DR[[x]]$cellphonedb %>% mutate(Group = x))
+write_tsv(liana.cellph.DR, file = paste0(mydir, 'CCC.', my.idents,'.', 'DvsR.CellPhoneDB.xls'))
+
+
+# filter cellphoneDB\
+liana.cellph.DR.f <- liana.cellph.DR %>% 
+  filter(pvalue <= 0.05) %>% 
+  inner_join(ref.lr %>% select(ligand.complex = Ligand, receptor.complex = Receptor)) # filtered by  xiaofei' L-R pairs
+
+
+
+# state
+liana.cellph.DR.f %>% select(ligand.complex, receptor.complex) %>% distinct() %>% nrow() #  cellphoneDB:  42
+nrow(liana.cellph.DR.f) # cellphoneDB:  2432
+
+# stat --- 
+
+write_tsv(liana.cellph.DR.f, paste0(my_dir, 'L-R.pairs.filtered.tsv'))
+liana.cellph.DR.f = read_tsv(paste0(my_dir, 'L-R.pairs.filtered.tsv'))
+
+# dotplot --- 
+source.cell = 'Malignant'
+target.cell = liana.cellph.DR.f %>% filter(target != 'Malignant' ) %>% pull(target) %>% unique()
+
+mydf = liana.cellph.DR.f %>% filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'L-R') %>% 
+    mutate(connection = str_c(ligand, receptor, sep = '->')) %>% 
+  bind_rows(liana.cellph.DR.f %>% select(tmp = source, source = target, target = source, everything()) %>% 
+              filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'R-L') %>% 
+                mutate(connection = str_c(receptor, ligand, sep = '<-')) ) %>% 
+  arrange(Direction)
+
+
+mydf$target = factor(mydf$target, levels = order.final_cell_type_major)
+mydf$connection = factor(mydf$connection, levels = mydf %>% select(connection, Direction) %>% distinct() %>% arrange(Direction) %>% pull(connection) )
+
+mydf = mydf %>% cSplit('Group',  direction = 'wide',  sep = '_')
+mydf$Sampling_time = factor(mydf$Group_1, levels = c('Primary',  'Relapse'))
+mydf$Tissue = factor(mydf$Group_2, levels = c('BM',  'LN'))
+
+
+ggplot(mydf ) +
+  geom_point(aes(x = Sampling_time, y = connection, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  facet_grid(Tissue ~ target) + 
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+  scale_size(range = c(1, 4)) + 
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+eoffice::topptx(last_plot(), filename = paste0(my_dir, 'plot.pptx'), append = T, width = 12, height = 5, title = 'Maligant - other cells')
+
+ggsave(last_plot(), filename = paste0(my_dir, 'Dotplot.Maligant-others.pdf'),  width = 15, height = 8)
+
+```
+
+
+
+
+
+
+
+
+## Cell talks  -  separated samples
+
+```{r setup for idents}
+my.idents = 'final_cell_type_major' # Malignant + NKT.celltype
+my.idents = 'final_cell_type_major.subcluster' # Malignant.subtype + NKT.celltype
+
+```
+
+
+
+
+
+```{r run liana seperate sample}
+q.cc.sce = Seurat::as.SingleCellExperiment(q.cc)
+my_dir = 'CellTalk_merged/Sample_seperate/'
+dir.create(my_dir)
+
+liana.major.sep <- liana_bysample(sce = q.cc.sce,
+                      sample_col = "Sample",
+                      idents_col = my.idents,
+                      #method = "sca", # we use SingleCellSignalR's score alone
+                      expr_prop = 0.1, # expression proportion threshold
+                      inplace=FALSE, # saves inplace to sce
+                      return_all = FALSE # whether to return non-expressed interactions
+                      )
+
+saveRDS(liana.major.sep, paste0(my_dir, paste0('liana.sepSample', my.idents, '.rds')))
+
+
+
+# aggregate & save
+lapply(names(liana.major.sep), FUN =  function(x) write.xlsx(liana_aggregate(liana.major.sep[[x]]) %>% as.data.frame(), 
+                                                             file = paste0(my_dir, 'CCC.', my.idents,'.xlsx'), sheetName = x, row.names = F, append = T))
+map(names(liana.major.sep), .f = function(x) write_tsv(liana_aggregate(liana.major.sep[[x]]) %>% as.data.frame(), file = paste0(mydir, 'CCC.', my.idents,'.', x, '.xls') ))
+
+
+# liana.MC2D <- liana_wrap(subset(q.cc, subset = Sample == 'MC2D'), expr_prop = 0.1, method = 'cellphonedb', idents_col = my.idents) # run if one sample has error
+
+
+# aggregate & intergrate all samples (MC2D and MC4R1 and MC4R2 have problems on cellphoneDB method)
+liana.aggre.all <- map_df(names(liana.major.sep), .f = function(x)  liana.major.sep[[x]] %>% liana_aggregate() %>% mutate(Sample = x))
+write_tsv(liana.aggre.all, file = paste0(my_dir, 'CCC.', my.idents,'.', 'allSamples.xls'))
+
+# cellphoneDB & intergrate all samples
+liana.cellph.all <- map_df(names(liana.major.sep[c(1:13,15:18)]), .f = function(x)  liana.major.sep[[x]]$cellphonedb %>% mutate(Sample = x))
+write_tsv(liana.cellph.all, file = paste0(my_dir, 'CCC.', my.idents,'.', 'allSamples.CellPhoneDB.xls'))
+liana.cellph.all = read_tsv( file = paste0(my_dir, 'CCC.', my.idents,'.', 'allSamples.CellPhoneDB.xls'))
+
+# stat for the cell proportion > 1% in each sample
+stat.celltype = q.cc@meta.data %>% 
+  mutate(Celltype  =  final_cell_type_major) %>%
+  # mutate(Celltype  =  final_cell_type_major.subcluster) %>%
+  group_by(Celltype, Sample) %>% summarise(n = n()) %>% 
+  ungroup() %>% group_by(Sample) %>% 
+  mutate(pct = n / sum(n) * 100)  %>% filter(pct > 1) %>%  # the small population were not analyzed
+  mutate(N_celltype = n_distinct(Celltype)) %>% filter(N_celltype > 1) %>%  # if no TME cell type , samples would not be analyzed
+  left_join(phe %>% select(Sample, Donor)) 
+write_tsv(stat.celltype, paste0(my_dir, '/stat.cellpctMT1.final_cell_type_major.xls'))
+# write_tsv(stat.celltype, 'CellTalk/stat.cellpctMT1.final_cell_type_major_subcluster.xls')
+stat.celltype = read_tsv('CellTalk_merged/Sample_seperate/stat.cellpctMT1.final_cell_type_major.xls') 
+```
+
+
+```{r filter}
+# filter aggregate
+liana.aggre.all.f <- liana.aggre.all %>% filter(aggregate_rank <= 0.05) %>% 
+  right_join( stat.celltype %>% transmute(Sample, Donor, source =Celltype  )) %>%  # filter Celltypes > 1% proportion
+  right_join( stat.celltype %>% transmute(Sample, Donor, target = Celltype ))  %>% 
+  filter(target != source)
+
+
+# filter cellphoneDB
+liana.cellph.all.f <- liana.cellph.all %>% filter(pvalue <= 0.05) %>% 
+  right_join( stat.celltype %>% transmute(Sample, Donor, source =Celltype  )) %>%  # filter Celltypes > 1% proportion
+  right_join( stat.celltype %>% transmute(Sample, Donor,  target = Celltype )) %>% 
+  inner_join(ref.lr %>% select(ligand.complex = Ligand, receptor.complex = Receptor)) # filtered by  xiaofei' L-R pairs
+
+
+
+# plot dot 
+source.cell = 'Malignant'
+target.cell = liana.cellph.all.f %>% filter(target != 'Malignant' ) %>% pull(target) %>% unique()
+
+mydf = liana.cellph.all.f %>% filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'L-R') %>% 
+      mutate(connection = str_c(ligand.complex, receptor.complex, sep = '->')) %>% 
+  bind_rows(liana.cellph.all.f %>% select(tmp = source, source = target, target = source, everything()) %>% 
+              filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'R-L') %>% 
+               mutate(connection = str_c(receptor.complex, ligand.complex, sep = '<-'))) %>% 
+  left_join(ref.lr %>% transmute(ligand.complex = Ligand, receptor.complex = Receptor, 
+                                             type = if_else(stimulation == 1, 'co-stimulation', if_else(inhibition == 1, 'co-inhibition', 'NA')))) %>% 
+  arrange(Direction, type)
+
+mydf = mydf %>%  
+  left_join(read_tsv('sample_IDmap.xls')) %>% mutate(Sample = Sample_new)
+
+mydf$target = factor(mydf$target, levels = order.final_cell_type_major)
+map_connect = mydf %>% select(Direction, type, connection) %>% distinct()  %>% arrange(Direction, type)
+mydf$connection = factor(mydf$connection, levels = unique(map_connect$connection))
+
+myconnect = 'CD70->CD27'
+myconnect = 'TNF->TNFRSF1B'
+myconnect = 'TNF->TNFRSF1A'
+myconnect = 'CXCR5<-CXCL13'
+myconnect = 'CD40<-CD40LG'
+myconnect = 'LGALS9->HAVCR2'
+
+ggplot(mydf %>% filter(connection == myconnect) ) +
+  geom_point(aes(x = target, y = Sample, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+  # facet_wrap( ~ Sample) + 
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+eoffice::topptx(last_plot(), filename = paste0(my_dir, 'plot.pptx'), append = T, width = 9, height = 5, title = myconnect)
+
+
+ggplot(mydf %>% filter(connection  %in% c('CD70->CD27','CD40<-CD40LG',   'CXCR5<-CXCL13', 'TNF->TNFRSF1B','TNF->TNFRSF1A', 'LGALS9->HAVCR2')) ) +
+  geom_point(aes(x = target, y = Sample, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+  scale_size_continuous(range = c(1,4)) +
+  facet_wrap( ~ connection, ncol = 1) + 
+  theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+eoffice::topptx(last_plot(), filename = paste0(my_dir, 'plot.pptx'), append = T, width = 6.5, height = 15, title = myconnect)
+
+
+```
+
+
+
+```{r CellphDB on pairs NOT USED}
+q.cc.sce = Seurat::as.SingleCellExperiment(subset(q.cc , subset = Donor %in% c('MC3', 'MC201', 'MC202', 'MC203', 'MC205', 'MC206', 'MC4' )) )
+liana.cellphDB.sep <- liana_bysample(sce = q.cc.sce,
+                      sample_col = "Sample",
+                      idents_col = my.idents,
+                      method = 'cellphonedb', # we use SingleCellSignalR's score alone
+                      resource = c('CellPhoneDB'),
+                      expr_prop = 0.1, # expression proportion threshold
+                      inplace=FALSE, # saves inplace to sce
+                      return_all = FALSE # whether to return non-expressed interactions
+                      )
+
+# cellphoneDB & intergrate all samples
+liana.cellph.pairs <- map_df(names(liana.cellphDB.sep), .f = function(x)  liana.major.sep[[x]]$cellphonedb %>% mutate(Sample = x))
+write_tsv(liana.cellph.pairs, file = paste0(mydir, 'CCC.', my.idents,'.', 'pairsSamples.CellPhoneDB.xls'))
+
+
+# filter cellphoneDB
+liana.cellph.pairs.f <- liana.cellph.pairs %>% filter(pvalue <= 0.05) %>% 
+  right_join( stat.celltype %>% transmute(Sample, Donor, source =Celltype  )) %>%  # filter Celltypes > 1% proportion
+  right_join( stat.celltype %>% transmute(Sample, Donor,  target = Celltype )) %>% 
+  # inner_join(ref.lr %>% select(ligand.complex = Ligand, receptor.complex = Receptor)) # filtered by  xiaofei' L-R pairs
+  # filter(target != source) %>% 
+  identity()
+```
+
+
+# Plot -- CellPhoneDB
+
+## seperate samples but multiple malignant subclusters
+
+```{r plot- sample level + malignant subclusters }
+liana.cellph.all <- read_tsv('CellTalk/CCC.final_cell_type_major.subcluster.allSamples.CellPhoneDB.xls') 
+stat.celltype = read_tsv('CellTalk/stat.cellpctMT1.final_cell_type_major_subcluster.xls') 
+
+# filter cellphoneDB
+liana.cellph.all.f <- liana.cellph.all %>% filter(pvalue <= 0.05) %>% 
+  right_join( stat.celltype %>% transmute(Sample, Donor, source =Celltype  )) %>%  # filter Celltypes > 1% proportion
+  right_join( stat.celltype %>% transmute(Sample, Donor,  target = Celltype )) %>% 
+  inner_join(ref.lr %>% select(ligand.complex = Ligand, receptor.complex = Receptor)) # filtered by  xiaofei' L-R pairs
+
+my_dir = 'CellTalk/SepreatedSamples_CellPhoneDB_fiteredLRs/'
+dir.create(my_dir)
+
+donor = 'MC3'
+donor = 'MC205'
+donor = 'MC206'
+donor = 'MC203'
+donor = 'MC4'
+donor = 'MC201'
+# stat 
+liana.cellph.donor.f = liana.cellph.all.f %>% filter(Donor == donor) 
+write_tsv(liana.cellph.donor.f, paste0(my_dir, donor,'.CCC.filter.tsv'))
+
+liana.cellph.donor.f %>% select(ligand.complex, receptor.complex) %>% distinct() %>% nrow() #34
+nrow(liana.cellph.donor.f) # 913
+
+# heatmap of L-R pairs ---- 
+
+# defualt - 
+ph <- heat_freq(liana.cellph.donor.f ) 
+pdf(file = paste0(my_dir, donor, '.heatmap.L-R.pdf'), h = 8, w = 8)
+ph
+dev.off()
+
+# add clusters
+ph =  liana.cellph.donor.f  %>% group_by(source ,target) %>% summarise(n = n()) %>% spread(source, n, fill = 0) %>% column_to_rownames('target')
+pheatmap(ph, cluster_rows = T, cluster_cols = T,display_numbers = F,  number_format ="%i",
+         # color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(10), angle_col = 90, 
+         # breaks = seq(0,20, 10), 
+         filename = paste0(my_dir,donor, 'heatmap.Source-Target.pdf'), h = 6, w = 7)
+
+
+# circle
+p_list <- liana.cellph.donor.f %>%  group_by(Sample) %>% group_map(~  chord_freq(.))
+p_chord <- plot_grid(plotlist = p_list, nrow = 1)
+# ggsave(p_chord, filename = paste0(my_dir, donor,'.Chord.pdf'), w= 20, h = 10) # 4samples
+ggsave(p_chord, filename = paste0(my_dir, donor,'.Chord.pdf'), w= 10, h = 5) # 2 samples
+
+# dotplot --- 
+source.cell = liana.cellph.donor.f %>% filter(grepl( 'Malignant', target  )) %>% pull(target) %>% unique()
+target.cell = liana.cellph.donor.f %>% filter(!grepl( 'Malignant', target  )) %>% pull(target) %>% unique()
+
+
+mydf = liana.cellph.donor.f %>% filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'L-R') %>% 
+      mutate(connection = str_c(ligand.complex, receptor.complex, sep = '->')) %>% 
+  bind_rows(liana.cellph.donor.f %>% select(tmp = source, source = target, target = source, everything()) %>% 
+              filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'R-L') %>% 
+               mutate(connection = str_c(receptor.complex, ligand.complex, sep = '<-'))) %>% 
+  left_join(ref.lr %>% transmute(ligand.complex = Ligand, receptor.complex = Receptor, 
+                                             type = if_else(stimulation == 1, 'co-stimulation', if_else(inhibition == 1, 'co-inhibition', 'NA')))) %>% 
+  arrange(Direction, type)
+
+mydf$target = factor(mydf$target, levels = order.final_cell_type_major)
+map_connect = mydf %>% select(Direction, connection, type) %>% distinct()  %>% arrange(Direction, type)
+mydf$connection = factor(mydf$connection, levels = unique(map_connect$connection))
+
+# Bone marrow: facet by Malignant clusters
+pd.bm.Maligant <- ggplot(mydf %>% filter(Sample != 'MC3Ri') ) +
+  geom_point(aes(x = target, y = connection, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+  scale_size_continuous(range = c(1,3)) +
+   facet_wrap( ~ Sample + source, nrow = 1) +
+  #  facet_wrap( ~  source, nrow = 1) + #mc206
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+# ggsave(pd.bm.Maligant, filename = paste0(my_dir, donor,'Dotplot.BM.facetByMalinant.pdf'), w= 20, h = 5) # MC3
+ggsave(pd.bm.Maligant, filename = paste0(my_dir, donor,'Dotplot.BM.facetByMalinant.pdf'), w= 14, h = 5) 
+#ggsave(pd.bm.Maligant, filename = paste0(my_dir, donor,'Dotplot.BM.facetByMalinantSubcluster.pdf'), w= 10, h = 5)  # MC206
+
+# Bone marrow: facet by Immune Cell
+# order.malignant <- str_c('Malignant.C', c(6,3,9,17,12,8,4,14,1,13)) # MC3
+pd.bm.Immune<- ggplot(mydf %>%
+                        filter(Sample != 'MC3Ri') %>%
+                        # mutate(source = factor(source, levels = order.malignant)) %>% 
+                        identity()) +
+  geom_point(aes(x = source, y = connection, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+    scale_size_continuous(range = c(1,3)) +
+  facet_wrap(  ~ target, nrow = 1) +
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+# ggsave(pd.bm.Immune, filename = paste0(my_dir, donor,'Dotplot.BM.facetByImmunecells.pdf'), w= 20, h = 5)  # MC3
+ggsave(pd.bm.Immune, filename = paste0(my_dir, donor,'Dotplot.BM.facetByImmunecells.pdf'), w= 14, h = 4)
+
+
+# MC3Rl only with CCD8Teff
+pd.ln.Maligant <- ggplot(mydf %>% filter(Sample == 'MC3Ri') ) +
+  geom_point(aes(x = source, y = connection, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+    scale_size_continuous(range = c(1,3)) +
+  facet_wrap( ~ target, nrow = 1) +
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+ggsave(pd.ln.Maligant, filename = paste0(my_dir, donor,'Dotplot.lymphnode.malignant.pdf'), w= 6, h = 5)
+
+
+
+
+```
+
+
+## seperate samples but multiple malignant subclusters
+
+```{r plot- sample level + one malignant cluster -- cellphoneDB}
+liana.cellph.all <- read_tsv('CellTalk/CCC.final_cell_type_major.allSamples.CellPhoneDB.xls')  # failed in MC206, 201 
+
+# filter cellphoneDB
+liana.cellph.all.f <- liana.cellph.all %>% filter(pvalue <= 0.05) %>% 
+  right_join( stat.celltype %>% transmute(Sample, Donor, source =Celltype  )) %>%  # filter Celltypes > 1% proportion
+  right_join( stat.celltype %>% transmute(Sample, Donor,  target = Celltype )) %>% 
+  inner_join(ref.lr %>% select(ligand.complex = Ligand, receptor.complex = Receptor)) # filtered by  xiaofei' L-R pairs
+
+
+my_dir = 'CellTalk/SepreatedSamples_CellPhoneDB_fiteredLRs_OneMalignantCluster/'
+dir.create(my_dir)
+
+donor = 'MC206' # no immune-related L_R pairs found in MC206 mgliannt cells by cellphoneDB method 
+donor = 'MC4' # failded in cellphoneDB
+donor = 'MC201' # no immune-related L_R pairs found in MC206 mgliannt cells by cellphoneDB method 
+
+# stat 
+liana.cellph.donor.f = liana.cellph.all.f %>% left_join(phe %>% select(Donor, Sample)) %>% filter(Donor == donor) 
+write_tsv(liana.cellph.donor.f, paste0(my_dir, donor,'.CCC.filter.tsv'))
+
+liana.cellph.donor.f %>% select(ligand.complex, receptor.complex) %>% distinct() %>% nrow() #34
+nrow(liana.cellph.donor.f) # 913
+
+# heatmap of L-R pairs ---- 
+
+# defualt - 
+ph <- heat_freq(liana.cellph.donor.f ) 
+pdf(file = paste0(my_dir, donor, '.heatmap.L-R.pdf'), h = 8, w = 8)
+ph
+dev.off()
+
+# add clusters
+ph =  liana.cellph.donor.f  %>% group_by(source ,target) %>% summarise(n = n()) %>% spread(source, n, fill = 0) %>% column_to_rownames('target')
+pheatmap(ph, cluster_rows = T, cluster_cols = T,display_numbers = F,  number_format ="%i",
+         # color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(10), angle_col = 90, 
+         # breaks = seq(0,20, 10), 
+         filename = paste0(my_dir,donor, 'heatmap.Source-Target.pdf'), h = 6, w = 7)
+
+
+# circle
+p_list <- liana.cellph.donor.f %>%  group_by(Sample) %>% group_map(~  chord_freq(.))
+p_chord <- plot_grid(plotlist = p_list, nrow = 1)
+# ggsave(p_chord, filename = paste0(my_dir, donor,'.Chord.pdf'), w= 20, h = 10) # 4samples
+ggsave(p_chord, filename = paste0(my_dir, donor,'.Chord.pdf'), w= 10, h = 5) # 2 samples
+
+# dotplot --- 
+source.cell = liana.cellph.donor.f %>% filter(grepl( 'Malignant', target  )) %>% pull(target) %>% unique()
+target.cell = liana.cellph.donor.f %>% filter(!grepl( 'Malignant', target  )) %>% pull(target) %>% unique()
+
+mydf = liana.cellph.donor.f %>% filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'L-R') %>% 
+    mutate(connection = str_c(ligand, receptor, sep = '->')) %>% 
+  bind_rows(liana.cellph.donor.f %>% select(tmp = source, source = target, target = source, everything()) %>% 
+              filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'R-L') %>% 
+                mutate(connection = str_c(ligand, receptor, sep = '<-')) ) %>% 
+  arrange(Direction) 
+
+mydf$target = factor(mydf$target, levels = order.final_cell_type_major)
+map_connect = mydf %>% select(Direction, connection) %>% distinct()  %>% arrange(Direction)
+mydf$connection = factor(mydf$connection, levels = unique(map_connect$connection))
+
+# facet by Malignant clusters
+pd.bm.Maligant <- ggplot(mydf  ) +
+  geom_point(aes(x = target, y = connection, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+  facet_wrap( ~ Sample + source, nrow = 1) +
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+ggsave(pd.bm.Maligant, filename = paste0(my_dir, donor,'Dotplot.BM.facetByMalinant.pdf'), w= 14, h = 5) 
+
+#acet by Immune Cell
+pd.bm.Immune<- ggplot(mydf %>%
+                        identity()) +
+  geom_point(aes(x = source, y = connection, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+  facet_wrap(  ~ target, nrow = 1) +
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+ggsave(pd.bm.Immune, filename = paste0(my_dir, donor,'Dotplot.BM.facetByImmunecells.pdf'), w= 14, h = 4)
+```
+
+
+Becuase use filtering (CellphoneDB pvalue < 0.05 + 160 L-Rpairs ) could not get L-R pairs in malignant cells, so we loosen the criteria (not need in 160 L-R pairs but consesus pvalue <0.01) and plot all sample together
+
+```{r plot- sample level + one malignant cluster }
+liana.cellph.all <- read_tsv('CellTalk/CCC.final_cell_type_major.allSamples.CellPhoneDB.xls')  # failed in MC206, 201 
+
+# filter aggrgate 
+liana.aggre.all.f <- read_tsv('CellTalk/CCC.final_cell_type_major.allSamples.xls') %>% 
+  filter(aggregate_rank <= 0.01) %>% 
+  right_join( stat.celltype %>% transmute(Sample, Donor, source = Celltype  )) %>%  # filter Celltypes > 1% proportion
+  right_join( stat.celltype %>% transmute(Sample, Donor, target = Celltype ))  %>% 
+  mutate(source = if_else(source == 'Malignant', str_c('Malignant', Sample, sep = '_'), source), 
+         target = if_else(target == 'Malignant', str_c('Malignant', Sample, sep = '_'), target)) %>% 
+  # inner_join(ref.lr %>% select(ligand.complex = Ligand, receptor.complex = Receptor)) %>% # filtered by  xiaofei' L-R pairs
+  identity() 
+
+my_dir = 'CellTalk/SepreatedSamples_Consensus_fiteredLRs_OneMalignantCluster/'
+dir.create(my_dir)
+
+# heatmap of L-R pairs ---- 
+
+# defualt - 
+ph <- heat_freq(liana.aggre.all.f ) 
+pdf(file = paste0(my_dir,  'heatmap.L-R.pdf'), h = 8, w = 8)
+ph
+dev.off()
+
+# add clusters
+ph =  liana.aggre.all.f  %>% group_by(source ,target) %>% summarise(n = n()) %>% spread(source, n, fill = 0) %>% column_to_rownames('target')
+pheatmap(ph, cluster_rows = T, cluster_cols = T,display_numbers = F,  number_format ="%i",
+         # color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(10), angle_col = 90, 
+         # breaks = seq(0,20, 10), 
+         filename = paste0(my_dir, 'heatmap.Source-Target.pdf'), h = 6, w = 7)
+
+
+# circle
+p_list <- liana.aggre.all.f %>%  group_by(Sample) %>% group_map(~  chord_freq(.))
+p_chord <- plot_grid(plotlist = p_list, nrow = 1)
+# ggsave(p_chord, filename = paste0(my_dir, donor,'.Chord.pdf'), w= 20, h = 10) # 4samples
+ggsave(p_chord, filename = paste0(my_dir, donor,'.Chord.pdf'), w= 10, h = 5) # 2 samples
+
+# dotplot --- 
+source.cell = liana.aggre.all.f %>% filter(grepl( 'Malignant', target  )) %>% pull(target) %>% unique()
+target.cell = liana.aggre.all.f %>% filter(!grepl( 'Malignant', target  )) %>% pull(target) %>% unique()
+
+mydf = liana.aggre.all.f %>% filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'L-R') %>% 
+    mutate(connection = str_c(ligand.complex, receptor.complex, sep = '->')) %>% 
+  bind_rows(liana.aggre.all.f %>% select(tmp = source, source = target, target = source, everything()) %>% 
+              filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'R-L') %>% 
+                mutate(connection = str_c(ligand.complex, receptor.complex, sep = '<-')) ) %>% 
+  filter(!grepl('HLA', connection)) %>% 
+  arrange(Direction) 
+
+mydf$target = factor(mydf$target, levels = order.final_cell_type_major)
+map_connect = mydf %>% select(Direction, connection) %>% distinct()  %>% arrange(Direction)
+mydf$connection = factor(mydf$connection, levels = unique(map_connect$connection))
+
+# facet by Malignant clusters
+donor = 'MC201'
+donor = 'MC206'
+
+pd.bm.Maligant <- ggplot(mydf  %>% filter(Donor == donor) ) +
+  geom_point(aes(x = target, y = connection, size = -log10(aggregate_rank + 1e-10), color =sca.LRscore )) +
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+  facet_wrap( ~ source,  nrow = 1) +
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+ggsave(pd.bm.Maligant, filename = paste0(my_dir, donor,  'Dotplot.BM.facetByMalinant.pdf'), w= 10, h =8) 
+
+#acet by Immune Cell
+pd.bm.Immune<- ggplot(mydf %>% filter(Donor == donor)) +
+  geom_point(aes(x = source, y = connection, size = -log10(aggregate_rank + 1e-10), color =sca.LRscore )) +
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+  facet_wrap( ~  target,  nrow = 1) +
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+ggsave(pd.bm.Immune, filename = paste0(my_dir, donor, '.Dotplot.BM.facetByImmunecells.pdf'), w=10, h = 8)
+
+```
+
+
+## MC205 - subclone
+```{r MC205_subclone}
+my_dir = 'CellTalk/MC205_subclone/'
+dir.create(my_dir)
+
+q.mc205 <- subset(q.cc, subset = Donor == 'MC205')
+cell2SHMclone = read_tsv('q.patient/MC205/malignantCells.CellBarcode2BCRsubclone_mergedTRUSTrsult.tsv') #subclone_merge
+q.mc205@meta.data <- q.mc205@meta.data %>% left_join(cell2SHMclone) %>% 
+  mutate(final_cell_type_major.subclone = if_else(final_cell_type_major == 'Malignant', str_c('Malignant', subclone_merge, sep = '_'), final_cell_type_major)) %>% 
+  mutate(final_cell_type_major.subclone = if_else(is.na(final_cell_type_major.subclone), 'Malignant_NA', final_cell_type_major.subclone))
+table(q.mc205$final_cell_type_major.subclone)
+rownames(q.mc205@meta.data) = q.mc205$CellBarcode
+
+sce = Seurat::as.SingleCellExperiment(q.mc205)
+liana.mc205 <- liana_bysample(sce = sce,
+                      sample_col = "Sample",
+                      idents_col = 'final_cell_type_major.subclone',
+                      #method = "sca", # we use SingleCellSignalR's score alone
+                      expr_prop = 0.1, # expression proportion threshold
+                      inplace=FALSE, # saves inplace to sce
+                      return_all = FALSE # whether to return non-expressed interactions
+                      )
+
+saveRDS(liana.mc205, paste0(mydir, paste0(my_dir,'mc205.subclone.rds')))
+
+# aggregate & intergrate all samples (MC2D and MC4R1 and MC4R2 have problems on cellphoneDB method)
+liana.aggre.mc205<- map_df(names(liana.mc205), .f = function(x)  liana.mc205[[x]] %>% liana_aggregate() %>% mutate(Sample = x))
+write_tsv(liana.aggre.mc205, file = paste0(my_dir,  'allMethod.xls'))
+
+# cellphoneDB & intergrate all samples
+liana.cellph.mc205 <- map_df(names(liana.mc205), .f = function(x)  liana.mc205[[x]]$cellphonedb %>% mutate(Sample = x))
+write_tsv(liana.cellph.mc205, file = paste0(my_dir, 'CellPhoneDB.xls'))
+
+# stat for the cell proportion > 1% in each sample
+stat.celltype.mc205 = q.mc205@meta.data %>% 
+  mutate(Celltype  =  final_cell_type_major.subclone) %>%
+  # mutate(Celltype  =  final_cell_type_major.subcluster) %>%
+  group_by(Celltype, Sample) %>% summarise(n = n()) %>% 
+  ungroup() %>% group_by(Sample) %>% 
+  mutate(pct = n / sum(n) * 100)  %>% filter(pct > 1) %>%  # the small population were not analyzed
+  mutate(N_celltype = n_distinct(Celltype)) %>% filter(N_celltype > 1) %>%  # if no TME cell type , samples would not be analyzed
+  left_join(phe %>% select(Sample, Donor)) 
+
+write_tsv(stat.celltype.mc205, paste0(my_dir, 'MC205_stat_cellproportionMT1.tsv'))
+
+# filter cellphoneDB ------
+liana.cellph.mc205.f <- liana.cellph.mc205 %>% filter(pvalue <= 0.05) %>% 
+  right_join( stat.celltype.mc205 %>% transmute(Sample, Donor, source =Celltype  )) %>%  # filter Celltypes > 1% proportion
+  right_join( stat.celltype.mc205 %>% transmute(Sample, Donor,  target = Celltype )) %>% 
+  inner_join(ref.lr %>% select(ligand.complex = Ligand, receptor.complex = Receptor)) # filtered by  immune-related ' L-R pairs
+
+table(liana.cellph.mc205.f$target)
+table(liana.cellph.mc205.f$source)
+
+
+donor = 'MC205'
+# stat 
+write_tsv(liana.cellph.mc205.f, paste0(my_dir,'.CCC.filterbuCellPhoneDB_160LRpairs.tsv'))
+
+liana.cellph.mc205.f %>% select(ligand.complex, receptor.complex) %>% distinct() %>% nrow() #22
+nrow(liana.cellph.mc205.f) # 602
+
+# heatmap of L-R pairs ---- 
+
+# defualt - 
+ph <- heat_freq(liana.cellph.mc205.f ) 
+pdf(file = paste0(my_dir, donor, '.heatmap.L-R.pdf'), h = 8, w = 8)
+ph
+dev.off()
+
+# add clusters
+ph =  liana.cellph.mc205.f  %>% group_by(source ,target) %>% summarise(n = n()) %>% spread(source, n, fill = 0) %>% column_to_rownames('target')
+pheatmap(ph, cluster_rows = T, cluster_cols = T,display_numbers = F,  number_format ="%i",
+         # color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(10), angle_col = 90, 
+         # breaks = seq(0,20, 10), 
+         filename = paste0(my_dir,donor, 'heatmap.Source-Target.pdf'), h = 6, w = 7)
+
+
+# circle
+p_list <- liana.cellph.mc205.f %>%  group_by(Sample) %>% group_map(~  chord_freq(.))
+p_chord <- plot_grid(plotlist = p_list, nrow = 1)
+# ggsave(p_chord, filename = paste0(my_dir, donor,'.Chord.pdf'), w= 20, h = 10) # 4samples
+ggsave(p_chord, filename = paste0(my_dir, donor,'.Chord.pdf'), w= 10, h = 5) # 2 samples
+
+# dotplot --- 
+source.cell = liana.cellph.mc205.f %>% filter(grepl( 'Malignant', target  )) %>% pull(target) %>% unique()
+target.cell = liana.cellph.mc205.f %>% filter(!grepl( 'Malignant', target  )) %>% pull(target) %>% unique()
+
+mydf = liana.cellph.mc205.f %>% filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'L-R') %>% 
+    mutate(connection = str_c(ligand, receptor, sep = '->')) %>% 
+  bind_rows(liana.cellph.mc205.f %>% select(tmp = source, source = target, target = source, everything()) %>% 
+              filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'R-L') %>% 
+                mutate(connection = str_c(ligand, receptor, sep = '<-')) ) %>% 
+  arrange(Direction)
+
+mydf$target = factor(mydf$target, levels = order.final_cell_type_major)
+map_connect = mydf %>% select(Direction, connection) %>% distinct()  %>% arrange(Direction)
+mydf$connection = factor(mydf$connection, levels = unique(map_connect$connection))
+
+# Bone marrow: facet by Malignant clusters
+pd.bm.Maligant <- ggplot(mydf  ) +
+  geom_point(aes(x = target, y = connection, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+  facet_wrap( ~ Sample + source, nrow = 1) +
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+# ggsave(pd.bm.Maligant, filename = paste0(my_dir, donor,'Dotplot.BM.facetByMalinant.pdf'), w= 20, h = 5) # MC3
+ggsave(pd.bm.Maligant, filename = paste0(my_dir, donor,'Dotplot.BM.facetByMalinant.pdf'), w= 14, h = 5) 
+
+# Bone marrow: facet by Immune Cell
+# order.malignant <- str_c('Malignant.C', c(6,3,9,17,12,8,4,14,1,13)) # MC3
+pd.bm.Immune<- ggplot(mydf) +
+  geom_point(aes(x = source, y = connection, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+  facet_wrap(  ~ target, nrow = 1) +
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+# ggsave(pd.bm.Immune, filename = paste0(my_dir, donor,'Dotplot.BM.facetByImmunecells.pdf'), w= 20, h = 5)  # MC3
+ggsave(pd.bm.Immune, filename = paste0(my_dir, donor,'Dotplot.BM.facetByImmunecells.pdf'), w= 14, h = 4)
+
+
+
+
+
+```
+
+
+
+```{r MC206 subcluster&TME }
+q.cc.MC206 =  subset(q.cc, subset = Donor == 'MC206')
+
+sce = Seurat::as.SingleCellExperiment(q.cc.MC206)
+liana.mc206 <- liana_bysample(sce = sce,
+                      sample_col = "Sample",
+                      idents_col = 'final_cell_type_major.subcluster',
+                      #method = "sca", # we use SingleCellSignalR's score alone
+                      expr_prop = 0.1, # expression proportion threshold
+                      inplace=FALSE, # saves inplace to sce
+                      return_all = FALSE # whether to return non-expressed interactions
+                      )
+
+saveRDS(liana.mc206, paste0(mydir, paste0(my_dir,'mc205.subclone.rds')))
+
+# aggregate & intergrate all samples (MC2D and MC4R1 and MC4R2 have problems on cellphoneDB method)
+liana.aggre.mc205<- map_df(names(liana.mc205), .f = function(x)  liana.mc205[[x]] %>% liana_aggregate() %>% mutate(Sample = x))
+write_tsv(liana.aggre.mc205, file = paste0(my_dir,  'allMethod.xls'))
+
+# cellphoneDB & intergrate all samples
+liana.cellph.mc205 <- map_df(names(liana.mc205), .f = function(x)  liana.mc205[[x]]$cellphonedb %>% mutate(Sample = x))
+write_tsv(liana.cellph.mc205, file = paste0(my_dir, 'CellPhoneDB.xls'))
+
+# stat for the cell proportion > 1% in each sample
+stat.celltype.mc205 = q.mc205@meta.data %>% 
+  mutate(Celltype  =  final_cell_type_major.subclone) %>%
+  # mutate(Celltype  =  final_cell_type_major.subcluster) %>%
+  group_by(Celltype, Sample) %>% summarise(n = n()) %>% 
+  ungroup() %>% group_by(Sample) %>% 
+  mutate(pct = n / sum(n) * 100)  %>% filter(pct > 1) %>%  # the small population were not analyzed
+  mutate(N_celltype = n_distinct(Celltype)) %>% filter(N_celltype > 1) %>%  # if no TME cell type , samples would not be analyzed
+  left_join(phe %>% select(Sample, Donor)) 
+
+write_tsv(stat.celltype.mc205, paste0(my_dir, 'MC205_stat_cellproportionMT1.tsv'))
+
+# filter cellphoneDB ------
+liana.cellph.mc205.f <- liana.cellph.mc205 %>% filter(pvalue <= 0.05) %>% 
+  right_join( stat.celltype.mc205 %>% transmute(Sample, Donor, source =Celltype  )) %>%  # filter Celltypes > 1% proportion
+  right_join( stat.celltype.mc205 %>% transmute(Sample, Donor,  target = Celltype )) %>% 
+  inner_join(ref.lr %>% select(ligand.complex = Ligand, receptor.complex = Receptor)) # filtered by  immune-related ' L-R pairs
+
+table(liana.cellph.mc205.f$target)
+table(liana.cellph.mc205.f$source)
+
+
+donor = 'MC205'
+# stat 
+write_tsv(liana.cellph.mc205.f, paste0(my_dir,'.CCC.filterbuCellPhoneDB_160LRpairs.tsv'))
+
+liana.cellph.mc205.f %>% select(ligand.complex, receptor.complex) %>% distinct() %>% nrow() #22
+nrow(liana.cellph.mc205.f) # 602
+
+# heatmap of L-R pairs ---- 
+
+# defualt - 
+ph <- heat_freq(liana.cellph.mc205.f ) 
+pdf(file = paste0(my_dir, donor, '.heatmap.L-R.pdf'), h = 8, w = 8)
+ph
+dev.off()
+
+# add clusters
+ph =  liana.cellph.mc205.f  %>% group_by(source ,target) %>% summarise(n = n()) %>% spread(source, n, fill = 0) %>% column_to_rownames('target')
+pheatmap(ph, cluster_rows = T, cluster_cols = T,display_numbers = F,  number_format ="%i",
+         # color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(10), angle_col = 90, 
+         # breaks = seq(0,20, 10), 
+         filename = paste0(my_dir,donor, 'heatmap.Source-Target.pdf'), h = 6, w = 7)
+
+
+# circle
+p_list <- liana.cellph.mc205.f %>%  group_by(Sample) %>% group_map(~  chord_freq(.))
+p_chord <- plot_grid(plotlist = p_list, nrow = 1)
+# ggsave(p_chord, filename = paste0(my_dir, donor,'.Chord.pdf'), w= 20, h = 10) # 4samples
+ggsave(p_chord, filename = paste0(my_dir, donor,'.Chord.pdf'), w= 10, h = 5) # 2 samples
+
+# dotplot --- 
+source.cell = liana.cellph.mc205.f %>% filter(grepl( 'Malignant', target  )) %>% pull(target) %>% unique()
+target.cell = liana.cellph.mc205.f %>% filter(!grepl( 'Malignant', target  )) %>% pull(target) %>% unique()
+
+mydf = liana.cellph.mc205.f %>% filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'L-R') %>% 
+    mutate(connection = str_c(ligand, receptor, sep = '->')) %>% 
+  bind_rows(liana.cellph.mc205.f %>% select(tmp = source, source = target, target = source, everything()) %>% 
+              filter(source %in% source.cell, target %in% target.cell) %>% mutate(Direction = 'R-L') %>% 
+                mutate(connection = str_c(ligand, receptor, sep = '<-')) ) %>% 
+  arrange(Direction)
+
+mydf$target = factor(mydf$target, levels = order.final_cell_type_major)
+map_connect = mydf %>% select(Direction, connection) %>% distinct()  %>% arrange(Direction)
+mydf$connection = factor(mydf$connection, levels = unique(map_connect$connection))
+
+# Bone marrow: facet by Malignant clusters
+pd.bm.Maligant <- ggplot(mydf  ) +
+  geom_point(aes(x = target, y = connection, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+  facet_wrap( ~ Sample + source, nrow = 1) +
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+# ggsave(pd.bm.Maligant, filename = paste0(my_dir, donor,'Dotplot.BM.facetByMalinant.pdf'), w= 20, h = 5) # MC3
+ggsave(pd.bm.Maligant, filename = paste0(my_dir, donor,'Dotplot.BM.facetByMalinant.pdf'), w= 14, h = 5) 
+
+# Bone marrow: facet by Immune Cell
+# order.malignant <- str_c('Malignant.C', c(6,3,9,17,12,8,4,14,1,13)) # MC3
+pd.bm.Immune<- ggplot(mydf) +
+  geom_point(aes(x = source, y = connection, size = -log10(pvalue + 1e-10), color =lr.mean )) +
+  scale_color_gradientn( colors = rev(brewer.pal(10,'RdYlBu'))) +
+  facet_wrap(  ~ target, nrow = 1) +
+    theme_bw() +
+  theme(axis.text.x =  element_text(color = 'black', angle = 90, hjust = 1, vjust = 0.5)) 
+# ggsave(pd.bm.Immune, filename = paste0(my_dir, donor,'Dotplot.BM.facetByImmunecells.pdf'), w= 20, h = 5)  # MC3
+ggsave(pd.bm.Immune, filename = paste0(my_dir, donor,'Dotplot.BM.facetByImmunecells.pdf'), w= 14, h = 4)
+
+
+```
+
+

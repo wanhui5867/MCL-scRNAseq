@@ -1,0 +1,409 @@
+---
+title: "Normal controls"
+output: html_document
+date: "2024-12-04"
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, warning = F, message = F)
+knitr::opts_knit$set(root.dir = '~/OneDrive - Karolinska Institutet/Documents/Project/MCL_scRNAseq/')
+```
+
+
+```{r load pkgs}
+library(Seurat)
+library(patchwork)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(DoubletFinder)
+library(scRepertoire)
+library(harmony)
+library(clustree)
+library(RColorBrewer)
+library(ggpubr)
+library(eoffice)
+library(Azimuth)
+library(djvdj)
+library(pheatmap)
+source(file = '_src/Rfunctions_for_scRNA.R')
+source(file = '_src/global_setting.R')
+
+```
+
+# Description
+
+*Aim*:
+Reviewer question:  A limitation of the study is the lack of control samples. Only one is included and highly enriched in B cells. Thus, the authors cannot compare their findings on TME composition and cell-cell interactions in MCL to a normal control to define what is specific to MCL.. 
+
+Solution: 1. Downlaod normal bone marrow samples and reactive lymph node samples as controls. After searching online We download publicly available single-cell RNA sequencing (scRNA-seq) data of 
+* 5 normal bone marrow samples (PMID: 35549406) E-MTAB-11536  https://www.ebi.ac.uk/biostudies/arrayexpress/studies/E-MTAB-11536
+* 3 reactive lymph nodes RLN ( PMID: 35687817), https://cellxgene.cziscience.com/collections/968834a0-1895-40df-8720-666029b3bbac 
+which performed using 5' GEX sequencing without specific cell-type enrichment. 
+
+## set variables
+```{r gloable vars}
+
+color_tf = structure(brewer.pal(9, 'Set1')[c(1,9)], names = c('TRUE', 'FALSE'))
+
+color_clone1 = structure(brewer.pal(9, 'Set1')[c(1,3,9)], names = c('Dominant', 'Minor','NA'))
+
+isotype_list = c('IGHD', 'IGHM', "IGHA1", "IGHA2", "IGHG1", "IGHG2", "IGHG3", "IGHG4")
+col_isotype = structure( brewer.pal(8, 'Paired'),  names = isotype_list)
+
+order.cancer_type = c('MCL', 'Health')
+col.cancer_type = structure(  c(get_palette("Dark2", 2)[2], "#868686FF" )  , names = order.cancer_type)
+
+
+outfile = 'NormalData/plot.pptx'
+```
+
+
+
+# 1. Load normal data
+*  RLN data
+- download rds file (GSE203410_FL.rds) from https://cellxgene.cziscience.com/collections/968834a0-1895-40df-8720-666029b3bbac 
+```{r load RLN }
+fl = read_rds('NormalData/GSE203610_FL.rds')
+head(rln@meta.data)
+
+# only select RLN control samples
+table(rln$sample_id)
+rln = subset(fl, subset = sample_id %in% c('Control-053', 'Control-069', 'Control-084' ))
+rln$CellBarcode = rownames(rln@meta.data) 
+rln$Sample = if_else(rln$sample_id == 'Control-053', 'RLN1',
+                     if_else(rln$sample_id == 'Control-069', 'RLN2','RLN3'))
+
+# convert feature ID: ENSG to Gene symbol
+ensg2hugo = read_tsv('NormalData/mart_export.ENSG2HUGO.txt')
+rln.genes = ensg2hugo %>% filter(`Gene stable ID` %in% rownames(rln)) %>% filter(!is.na(`HGNC symbol`)) %>% filter(!duplicated(`HGNC symbol`), !duplicated(`Gene stable ID`))
+rln = subset(rln, features = rln.genes$`Gene stable ID`) 
+rln.names =  rln.genes$`HGNC symbol`[which(rln.genes$`Gene stable ID` %in% rownames(rln))]
+rownames(rln@assays$RNA@counts) = rln.names
+rownames(rln@assays$RNA@data) = rln.names
+
+
+rownames(rln)[grepl('^MT-', rownames(rln))] # use org.Hs.eg.db  mapID will lose genes such as MT genes, Hb genes
+# save
+saveRDS(rln, file = 'NormalData/RLN_GSE203610.rds')
+```
+
+* BM data
+- According to the table from E-MTAB-11536, we selected the Tissue == Bone marrrow, and then download the fastq data using ftp link provided in the data. Download on Uppmax: cfs/klemming/projects/snic/pha2020/private/huwan/scRNA/NormalBM
+- Then we run CellRanger to get matrix. Run on Uppmax: /cfs/klemming/projects/snic/pha2020/private/huwan/scRNA/MCL_scRNAseq/20241203_Normal_BM
+```{r load BM}
+read.BM <- function(samplename){
+  # samplename = 'MC1R_PBMC'
+  print(samplename)
+  dir_gex = paste0('./NormalData/BM_cellranger_out/', samplename, '_filtered_feature_bc_matrix.h5')
+  dir_vdf = paste0('./cellranger_out/MCL_samples/', samplename, '_vdj_b/')
+
+  # gex
+  sc.count <- Read10X_h5(dir_gex )
+  sdata <- CreateSeuratObject(counts = sc.count, project = samplename, min.cells = 3)
+  
+  # vdj
+  if (file.exists(paste0(dir_vdf, 'filtered_contig_annotations.csv'))) {
+      sdata <- import_vdj(sdata, vdj_dir = dir_vdf, filter_chains = T, filter_paired = T)
+      return(sdata)
+  }else{
+    return(sdata)
+  }
+}
+
+list.BM <- lapply(str_c('BM', seq(1:5)) , read.BM)
+names(list.BM) <- str_c('BM', seq(1:5))
+
+# merge BMs
+bm <- merge(list.BM[[1]],  list.BM[2:length(list.BM)], add.cell.ids = names(list.BM))
+bm$CellBarcode = rownames(bm@meta.data)
+bm$Sample = bm$orig.ident
+
+saveRDS(bm, file = 'NormalData/BM_merged.rds')
+
+```
+
+# 2. Merge and QC
+```{r merge}
+normal = merge(bm, rln)
+normal@meta.data = normal@meta.data %>% select(Sample, CellBarcode, nCount_RNA, nFeature_RNA)
+rownames(normal@meta.data) = normal$CellBarcode
+```
+
+
+
+- calculate percetage of MT and ribosomal genes per cell, and add to the metadata
+```{r cal_MT_RP, fig.height=8,fig.width=16}
+# caculat MT genes' percent
+normal <- PercentageFeatureSet(normal, pattern =  "^MT-", col.name = "percent_mito")
+
+# calculate RP genes' percent
+normal <- PercentageFeatureSet(normal, pattern = "RP[SL]", col.name = "percent_ribo")
+
+# Percent hemoglobin genes - includes all genes staring with HB except HBP
+normal<- PercentageFeatureSet(normal, pattern = "^HB[^(P)]", col.name = 'percent_hb')
+
+# cell cycle
+normal <- CellCycleScoring(object = normal,   g2m.features = cc.genes$g2m.genes, s.features = cc.genes$s.genes)
+
+
+#PLot some of the QC-features as violin Plots
+feats <- c("nFeature_RNA", "nCount_RNA", "percent_mito", "percent_ribo", "percent_hb")
+VlnPlot(normal, features = feats, pt.size = 0, ncol = 2, group.by = "Sample" ) + NoLegend()
+eoffice::topptx(last_plot() , filename = outfile, append = T, width =8, height = 5, title = paste0(' QC '))
+
+
+```
+
+
+
+- QC: remove cells
+```{r}
+df.cell_number = table(normal$Sample) %>% as.data.frame()
+#df.BCR_raw = Sample@meta.data %>% group_by(Sample) %>% summarise(BCR_raw = sum(VDJ == 'TRUE'))
+
+## filter cells ---------
+#data.filt <- subset(alldata, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent_mito < 20  & nCount_RNA < 40000 )
+data.filt <- subset(normal, subset = nFeature_RNA > 500 & nFeature_RNA < 5000 )
+df.cell_number$QC_step1  = table(data.filt$Sample)  %>% as.numeric()
+
+data.filt <- subset(data.filt, subset =  nCount_RNA < 40000 )
+df.cell_number$QC_step2  = table(data.filt$Sample)  %>% as.numeric()
+
+data.filt <- subset(data.filt, subset =  percent_mito < 20 )
+df.cell_number$QC_step3  = table(data.filt$Sample)  %>% as.numeric()
+
+
+data.filt <- subset(data.filt, subset =  percent_ribo > 5  )
+df.cell_number$QC_step4  = table(data.filt$Sample) %>% as.numeric()
+
+write_tsv(df.cell_number %>% select(Sample = Var1, RawCellNo = Freq, everything()), file = 'NormalData/1.QC.cell_number.tsv')
+
+# save 
+saveRDS(data.filt, file = 'NormalData/merged_BM_RLN.QC.rds')
+
+names(data.filt@meta.data)
+```
+# merged with MCL samples
+
+```{r merge MCl and normal}
+q.mcl <- readRDS("Matrix/03_data_cellannot_BCRfilt.inferedMalignant.noDoublets.annotCellsubtype.correctSample.rmIhopes.Normalized.RNAcount.rds")
+write_tsv(q.mcl@meta.data, 'Matrix/Metadata.03_data_cellannot_BCRfilt.inferedMalignant.noDoublets.annotCellsubtype.correctSample.rmIhopes.Normalized.RNAcount.tsv')
+
+q.mcl.rna <- CreateSeuratObject(counts = q.mcl@assays$RNA@counts, 
+                              meta.data = q.mcl@meta.data %>% select(one_of(names(data.filt@meta.data)) ))
+
+q.all <- merge(q.mcl.rna, data.filt)
+
+# add phe
+phe <- read_tsv('sample_info.xls')
+# q.all@meta.data <- q.all@meta.data %>% select(orig.ident:Phase)
+q.all@meta.data  <- q.all@meta.data %>% left_join(phe %>% select(-orig.ident), by = "Sample")
+rownames(q.all@meta.data) = q.all$CellBarcode
+saveRDS(q.all, 'Matrix/001.MCL_NCs.QC.rds')
+
+q.all <- readRDS('Matrix/001.MCL_NCs.QC.rds')
+phe = read_tsv('sample_info.xls')
+q.all@meta.data = q.all@meta.data %>% left_join(phe %>% select(Sample, Dataset))
+rownames(q.all@meta.data) <- q.all$CellBarcode
+```
+
+# Batch correction and Normalization - run nin Uppmax
+```{r harmony}
+data.norm <- read_rds('Matrix/001.MCL_NCs.QC.rds')
+data.norm@meta.data = data.norm@meta.data %>% left_join(phe %>% select(Sample, Dataset))
+rownames(data.norm@meta.data) <- data.norm$CellBarcode
+
+data.norm.harmony <- data.norm %>%
+  SCTransform(  verbose = FALSE) %>%
+  RunPCA( npcs = 50, verbose = F, assay.use = "SCT") %>%
+  RunHarmony( group.by.vars = c("Dataset") ,theta=1, lambda=1,dims.use = 1:50, project.dim = F)
+
+harmony_embeddings <- Embeddings(data.norm.harmony)
+ElbowPlot(data.norm.harmony, reduction = "harmony", ndims = 50) # 20-30 dims
+data.norm.harmony <- data.norm.harmony %>%
+  RunUMAP(dims = 1:30, reduction = "harmony", reduction.name = "umap" ) %>%
+  FindNeighbors( dims = 1:30,  reduction = "harmony") %>%
+  identity()
+
+
+plot_package(data.norm.harmony, mydir) # data & dir
+saveRDS(data.norm.harmony, file = paste0(mydir, 'data.Integrate.rds'))
+```
+
+# Cell type annotation
+```{r cell type}
+q.all <- readRDS("NormalData/normalization/harmony_dataset/harmony_datasetdata.Integrate.rds")
+
+q.all <-   q.all %>%  FindClusters(resolution = 0.6,  graph.name = 'SCT_snn')
+
+
+
+
+
+```
+
+## reannot all cells
+
+```{r re-annot}
+myfeatures <- c("CD3E", "CD4", "CD8A",  # T
+                "FCGR3A",  'NCAM1',  "NKG7", "GNLY",  #NK
+                "MS4A1", "CD19", 'CD79A', 'SDC1', #B&plasma
+              "CST3",  "CD68", "CD14", #Myeloid
+              'HBQ1', 'HBM', 'GYPA', # Eryth
+              "IBSP", "NT5E", "THY1", "ENG", #ENG
+              "AVP", "SPINK2", 'NEGR1', 'CYGB', 'LGALS1','FCGR1A') # HSC, Multi-Lin, LMPP, CLP, MDP-2, MEP (PMID: 30243574)
+# markers.ELP <- c('FLT3', 'LTB', 'RUNX2') #early lymphoid progenitors??
+
+
+#FeaturePlot(data.norm, reduction = my.reduction, dims = 1:2, features = myfeatures, ncol = 3,   order = T)
+# order.celltype = c('B', 'Malignant', 'T', 'NK', 'Myeloid', 'Eryth', 'HSC', 'LMP', 'Others')
+
+VlnPlot(q.all, features = myfeatures, ncol = 5, pt.size = 0)
+ggsave(last_plot(), filename = paste0(mydir, '1.Vlnplot.features.pdf'), w = 24, h = 12)
+
+DimPlot(q.all, group.by = "SCT_snn_res.0.6" , reduction = 'umap' , label = TRUE, label.size = 3,raster=FALSE) + NoLegend() 
+ggsave(last_plot(), filename = paste0(mydir, '1.Umap.cluster.pdf'), w = 8, h = 8)
+
+# infer from the Vlnplot + Dimplot
+T.clusters <- c(0,1,2,6, 9,26,27,28,30,32)
+B.clusters <- c(3,4,7,8,10,11,12,13,14,15,17,18,19,20,22,23, 25,29,34,35) # 34 is plasma mostly from RLN and BM
+Mono.clusters <- c(16,31,33)
+NK.clusters <- c(5,21) 
+Eryth <- c(24)
+
+# cluster 33(CD4+ CD68+ CST3+) & cluster 34(CD19+ CD79A) are unclear are mainly from RLN samples 
+
+
+cell.types <- data.frame(cellcluster = 0: (length(levels(q.all$SCT_snn_res.0.6))-1)) %>% 
+  mutate( infer_celltype_marker = if_else(cellcluster %in% T.clusters, 'T', 
+                                    if_else(cellcluster %in% B.clusters, 'B',
+                                       if_else(cellcluster %in% c(Mono.clusters), 'Myeloid', 
+                                               if_else(cellcluster %in% NK.clusters, 'NK', 
+                                                       if_else(cellcluster %in% Eryth, 'Eryth',  'Others'))))))
+         
+q.all$infer_celltype_marker <- plyr::mapvalues(q.all@active.ident, cell.types$cellcluster , cell.types$infer_celltype_marker )
+
+DimPlot(q.all, group.by = "infer_celltype_marker" , reduction = 'umap' , label = TRUE, label.size = 3,raster=FALSE) + NoLegend() 
+ggsave(last_plot(), filename = paste0(mydir, '1.Umap.infer_celltype_marker.pdf'), w = 8, h = 8)
+
+
+```
+
+## cell annotate using orignate one and infer the unknown cells by cluster cell proportion
+```{r old cell annotation}
+our.cellannot = read_tsv('Matrix/Metadata.03_data_cellannot_BCRfilt.inferedMalignant.noDoublets.annotCellsubtype.correctSample.rmIhopes.Normalized.RNAcount.tsv')
+head(our.cellannot)
+table(our.cellannot$Major_cell_type) # major
+table(our.cellannot$Cell_subtype) # major cell subtype
+table(our.cellannot$final_cell_type) # subtype
+
+
+# rln 
+rln.cellannot = read_csv('NormalData/GSE203610_FL-gex-meta.csv.gz') %>% filter(startsWith(sampleID,'RLT')) %>% 
+  mutate(Cell_subtype = `cell annotation`, 
+         celltype_major = str_remove(str_remove(`cell annotation`, '_.*'), 'Proliferating'),
+         celltype_major = if_else(celltype_major == 'TcellUndetermined', 'T', 
+                                  if_else(celltype_major == 'Erythrocyte', 'Eryth',
+                                          if_else( celltype_major %in% c('NormalB', 'NormalPlasma'), 'B',
+                                                   if_else( celltype_major == 'NKT', 'NK',
+                                                            if_else(celltype_major %in% c('fDC', 'pDC','Myeloid'), 'Myeloid', 
+                                                                    if_else(celltype_major %in% c('CD4', 'CD8', 'C5'), 'T', 'Others'
+                                                                            )))))))
+table(rln.cellannot$celltype_major)
+
+# merge to all cells
+q.all@meta.data = q.all@meta.data %>% 
+  left_join(bind_rows(our.cellannot %>% transmute(CellBarcode, origin.celltype_major = Major_cell_type, origin.final_cell_type = final_cell_type),
+                      rln.cellannot %>% transmute(CellBarcode = cell_id, origin.final_cell_type = Cell_subtype, origin.celltype_major = celltype_major)))
+rownames(q.all@meta.data) = q.all$CellBarcode
+
+table(q.all$origin.celltype_major)
+table(q.all$Sample, q.all$origin.celltype_major)
+
+
+
+# statistical between cell cluster & origin.celltype_major 
+
+p.orig = ggplot(q.all@meta.data %>% select(origin.celltype_major, Sample, CellBarcode,infer_celltype_marker, SCT_snn_res.0.6 )) +
+  geom_bar(aes(x = SCT_snn_res.0.6, fill = origin.celltype_major)) +
+  scale_fill_manual(values =  col.cell_major)
+
+p.inferByMarker = ggplot(q.all@meta.data %>% select(origin.celltype_major, Sample, CellBarcode,infer_celltype_marker, SCT_snn_res.0.6 )) +
+  geom_bar(aes(x = SCT_snn_res.0.6, fill = infer_celltype_marker)) +
+  scale_fill_manual(values =  col.cell_major)
+
+p.orig / p.inferByMarker  # cell annotation on clusters are consistence , except for C28, mostly from normal BM samples: CD3+ but CD4 and CD8 weak, NGK7+ , may be NKT+ cells or double negative cells
+
+
+# infer the cells with unknow cell types
+q.all@meta.data = q.all@meta.data %>% 
+  mutate(Major_cell_type = if_else(!is.na(origin.celltype_major), origin.celltype_major, infer_celltype_marker),
+         celltype_manu = if_else(Major_cell_type == 'Malignant', 'B' , Major_cell_type))
+rownames(q.all@meta.data) = q.all$CellBarcode 
+
+DimPlot(q.all, reduction = 'umap', group.= "Major_cell_type", repel = T, label = F, label.size = 7, raster = T) 
+
+
+```
+
+
+# merge BCR data
+```{r merge }
+q.all@meta.data = q.all@meta.data %>% left_join(our.cellannot %>% select(CellBarcode, VDJ_manu,  SHM_VH, SHM_VL, CNV_score, domaintClone,clonalBCR))
+rownames(q.all@meta.data) = q.all$CellBarcode
+```
+
+
+```{r ig k/r ratio}
+
+
+df.igl = q.all@meta.data %>% select(CellBarcode, Sample, SCT_snn_res.0.6, Major_cell_type)
+df.igl$igk = as.vector(q.all@assays$RNA['IGKC',]) 
+#df.igl$igl = as.vector(data.norm@assays$RNA['IGLC2',])  # some tumor express IGLC1 and IGLC3, so only C2 will miss 
+df.igl$igl = apply(q.all@assays$RNA[str_c('IGLC', 1:7),], 2, max) 
+
+df.igl = df.igl %>% mutate(igl_ratio =  if_else(!Major_cell_type %in% c('B', 'Malignant'), -1, 
+                                                (if_else(igk + igl == 0, -1, 
+                                               if_else(igk == 0 & igl !=0, 0, 
+                                                       if_else(igk !=0 & igl ==0, 1, (igk)/(igk + igl))))))) %>% 
+                mutate(igl_kl_ratio = ifelse(igl_ratio == -1, NA, igl_ratio))
+
+write_tsv(df.igl, 'BCR/IgK_L.ratio.cell.mergeData.tsv')
+
+
+q.all@meta.data = q.all@meta.data %>%   left_join(df.igl %>% select(CellBarcode, igl_kl_ratio))
+rownames(q.all@meta.data) = q.all$CellBarcode
+
+FeaturePlot(q.all, features  = "igl_kl_ratio", repel = T, 
+                     #cols =  c(  "blue", "white","red"),  blend.threshold = 1,
+                     raster = F,
+                    label = F, label.size = 7) + NoAxes()  +  
+         scale_colour_gradientn(colours = rev(brewer.pal(n = 11, name = "RdYlBu"))) + 
+          #scale_color_manual(values = color_clone1) + 
+          labs(title = paste0('by IGK/IKL ratio') )
+
+# how many have ration & B cell number
+sum(!is.na(df.igl$igl_ratio ))
+
+
+
+```
+
+
+```{r check sex}
+SetIdent(q.all) <- 'Sample'
+VlnPlot(q.all, group.by = 'Sample', features = c("XIST", "pct_chrY")) # female: BM1, MB5, NC01, RLN1, RLN3, MC204, MC206
+```
+
+```{r}
+saveRDS(q.all, "NormalData/normalization/harmony_dataset/harmony_datasetdata.Integrate.cellannot.rds")
+# subset(q.all, subset = Major_cell_type %in% c('T', 'NK'))
+
+# q.all <- readRDS("NormalData/normalization/harmony_dataset/harmony_datasetdata.Integrate.cellannot.rds")
+# saveRDS(subset(q.all, subset = Major_cell_type %in% c('B', 'Malignant')), "Matrix/004_B.merged.rds")
+# saveRDS(subset(q.all, subset = Major_cell_type %in% c('B')), "Matrix/004_normB.merged.rds")
+
+```
+

@@ -1,0 +1,1179 @@
+---
+title: "T.subset"
+author: "hui.wan"
+date: "24/01/2025"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, warning = F, message = F)
+knitr::opts_knit$set(root.dir = '~/OneDrive - Karolinska Institutet//Documents//Project/MCL_scRNAseq/')
+```
+
+```{r load pkgs}
+source(file = '_src/Rfunctions_for_scRNA.R')
+source(file = '_src/global_setting.R')
+
+```
+
+
+## set variables
+```{r gloable vars}
+
+order_T2 = c('CD4', 'CD8') 
+color_T2 = structure(brewer.pal(9, 'Set3')[c(1,6)], naames   = order_T2)
+
+outdir = 'q.NKT.cells/'
+dir.create(outdir)
+outfile = 'q.NKT.cells/plot_NKT.pptx'
+```
+
+
+## Load datasets
+```{r load data}
+q.t.raw <- readRDS('Matrix/004_T.rds') # Normalized and clustered
+q.t.raw <- subset(q.all, subset = Major_cell_type %in% c('T', 'NK'))
+names(q.t.raw@meta.data)
+
+q.t <- CreateSeuratObject(counts = q.t.raw@assays$RNA@counts, 
+                             meta.data = q.t.raw@meta.data)
+
+q.t <- q.t[!grepl("^TR[AB][VDJ]", rownames(q.t)), ] # remove TCR genes
+rm(q.t.raw)
+gc()
+
+saveRDS(q.t, 'Matrix/004_T.merged.rds')
+```
+
+
+## Preporcess using seurat 
+Run in UPPMAX: /cfs/klemming/projects/snic/pha2020/private/huwan/scRNA/MCL_scRNAseq/MCL_dataprocess_20241205
+
+```{r preprocess}
+# Done in the uppmax
+q.t <- q.t %>%
+  SCTransform( assay = "RNA", new.assay.name = "SCT", verbose = FALSE) %>%
+  RunPCA( npcs = 50, verbose = F, assay.use = "SCT") %>%
+  RunHarmony( group.by.vars = c('Dataset','Sample') , theta=c(1,2), lambda=c(1,0.5), dims.use = 1:50)  %>%
+  RunUMAP(dims = 1:20, reduction = "harmony", reduction.name = "umap") %>%
+  FindNeighbors( dims = 1:20,  reduction = "harmony") %>%
+  FindClusters(resolution = 1,  graph.name = 'SCT_snn') %>%
+  identity()
+
+DimPlot(q.t, group.by = "celltype_manu", reduction = 'umap') +   ggtitle('umap')  
+DimPlot(q.t, group.by = "Sample", reduction = 'umap') +   ggtitle('umap')  
+# any sample specific clusters
+table(q.t$Sample, q.t$SCT_snn_res.0.75) %>% pheatmap(scale = 'column')
+
+```
+
+
+```{r save/read}
+saveRDS(q.t, 'NormalData/normalization/T_harmony_dataset_sample.theta3lambda05/data.Integrate.rds')
+
+q.t <- readRDS('NormalData/normalization/T_harmony_dataset_sample.Dataset_theta1lamda1.Sample_theta2lambda02/data.Integrate.rds')
+
+```
+
+
+
+re-clustering
+```{r subclustering}
+
+# building graph
+q.t@active.assay
+my.reduction = "umap"
+
+# check the names for graphs in the object.
+names(q.t@graphs)
+
+# Clustering with louvain (algorithm 1)
+for (res in c(0.1, 0.25,  0.5, 0.75, 1, 1.5, 2)) {
+    q.t <- FindClusters(q.t, graph.name = "SCT_snn", resolution = res, algorithm = 1 )
+}
+
+plot_grid(ncol = 3, 
+    #DimPlot(data.filt, reduction = "umap", group.by = "orig.ident") + ggtitle("UMAP raw_data"),
+    #DimPlot(data.norm, reduction = my.reduction, group.by = "orig.ident") + ggtitle("UMAP "),
+    DimPlot(q.t, reduction = my.reduction, label =  T, group.by = "SCT_snn_res.0.25") +  ggtitle("louvain_0.1") ,
+    DimPlot(q.t, reduction = my.reduction, label =  T, group.by = "SCT_snn_res.0.25") +  ggtitle("louvain_0.25") , 
+    DimPlot(q.t, reduction = my.reduction, label =  T, group.by = "SCT_snn_res.0.5") +  ggtitle("louvain_0.5") , 
+    DimPlot(q.t, reduction = my.reduction, label =  T, group.by = "SCT_snn_res.0.75") +  ggtitle("louvain_0.75") , 
+    DimPlot(q.t, reduction = my.reduction, label = T, group.by = "SCT_snn_res.1") +  ggtitle("louvain_1"), 
+    DimPlot(q.t, reduction = my.reduction,label = T,  group.by = "SCT_snn_res.1.5") +  ggtitle("louvain_1.5"),
+    DimPlot(q.t, reduction = my.reduction,  group.by = "SCT_snn_res.2", label = T) +  ggtitle("louvain_2") ,
+    DimPlot(q.t, group.by = "celltype_manu", reduction = 'umap') +   ggtitle('umap')  ,
+    DimPlot(q.t, group.by = "orig.ident", reduction = 'umap') +   ggtitle('umap')  
+
+    
+    )
+
+ggsave(last_plot(), filename = paste0(outdir, '02.Dimplot.resoultionSelect.png'), w = 16, h = 10) 
+res = 0.5 # 
+#res = 1.5
+
+q.t <- FindClusters(q.t, graph.name = "SCT_snn", resolution = 0.75, algorithm = 1 )
+```
+
+
+```{r plot clustree}
+q.t$SCT_snn_res.0.6 <- NULL
+clustree(q.t@meta.data, prefix = "SCT_snn_res.")
+ggsave(last_plot(), filename = paste0(outdir, '02.dimplot.resoultionTree.harmony.png'), w = 7, h = 10) 
+
+```
+
+### cell cycle
+```{r}
+# q.t <- CellCycleScoring(object = q.t, 
+#                               g2m.features = cc.genes$g2m.genes,
+#                               s.features = cc.genes$s.genes)
+VlnPlot(q.t, features = c('S.Score', 'G2M.Score'), group.by = 'orig.ident', ncol = 4, pt.size = .1)
+
+# Running a PCA on cell cycle genes reveals, 
+q.t <- RunPCA(q.t, features = c(cc.genes$s.genes, cc.genes$g2m.genes))
+DimPlot(q.t, group.by = 'Phase') 
+# cells are not separated  by phase
+```
+
+
+
+### Dimplot & save  ---- 
+
+```{r save/read}
+# saveRDS(q.t, 'q.t.cells/01.subset.count.norm.clust.rds')
+
+q.t <- readRDS('NormalData/normalization/T_harmony_dataset_sample.theta2lambda05/data.Integrate.rds')
+
+
+
+```
+
+
+```{r  Dimplot}
+
+w = 6
+h = 6
+reduction = 'umap'
+sel.clust = "SCT_snn_res.0.75"
+
+# plot dataset=3
+ggsave( DimPlot(q.t, reduction = reduction, group.= "dataset", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('Dataset') ) + 
+                    scale_color_manual(values = col.dataset) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Dataset.T.png'), w = w+2, h = h)
+
+
+ggsave( DimPlot(q.t, reduction = reduction, group.= "dataset", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Dataset') ) + 
+                    scale_color_manual(values = col.dataset) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Dataset.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.t, reduction = reduction, group.= "dataset", repel = T, label = T, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Dataset') ) + 
+                    scale_color_manual(values = col.dataset) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Dataset.L.png'), w = w, h = h)
+
+# plot cancer type
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "Cancer_type", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('Cancer type') ) + 
+                    scale_color_manual(values = col.cancer_type) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.cancer_type.T.png'), w = w+2, h = h)
+
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "Cancer_type", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Cancer type') ) + 
+                    scale_color_manual(values = col.cancer_type) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.cancer_type.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "Cancer_type", repel = T, label = T, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Cancer type') ) + 
+                    scale_color_manual(values = col.cancer_type) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.cancer_type.L.png'), w = w, h = h)
+
+# plot sampling tissue
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "Tissue", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('Tissue') ) + 
+            scale_color_manual(values = col.tissue) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.tissue.T.png'), w = w+1, h = h)
+
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "Tissue", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Tissue') ) + 
+            scale_color_manual(values = col.tissue) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.tissue.F.png'), w = w, h = h)
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "Tissue", repel = T, label = T, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Tissue') ) + 
+            scale_color_manual(values = col.tissue) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.tissue.L.png'), w = w, h = h)
+
+
+# plot samples
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "Sample", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('Sample') ) + 
+          scale_color_manual(values = col.sample) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.sample.T.png'), w = w+2, h = h)
+
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "Sample", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+           scale_color_manual(values = col.sample) + 
+          labs(title = paste0('Sample') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.sample.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "Sample", repel = T, label = T, label.size = 5, raster = T) + NoAxes()  +  
+          NoLegend() + 
+           scale_color_manual(values = col.sample) + 
+          labs(title = paste0('Sample') ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.sample.L.png'), w = w, h = h)
+
+# plot Donor/patients
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "Patient", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('Patient') ) + 
+          scale_color_manual(values = col.patient) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Patient.T.png'), w = w+2, h = h)
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "Patient", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('Patient') ) + 
+          scale_color_manual(values = col.patient) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Patient.F.png'), w = w, h = h)
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "Patient", repel = T, label = T, label.size = 6, raster = T) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('Patient') ) + 
+          scale_color_manual(values = col.patient) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Patient.L.png'), w = w, h = h)
+
+
+# plot Sampling time
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "Sampling_time", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          labs(title = paste0('Sampling time') ) + 
+                    scale_color_manual(values = col.samtime) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Sampling_time.T.png'), w = w+1, h = h)
+
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "Sampling_time", repel = T, label = F, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Sampling time') ) + 
+                    scale_color_manual(values = col.samtime) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Sampling_time.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "Sampling_time", repel = T, label = T, label.size = 7, raster = T) + NoAxes()  +  
+          NoLegend() + 
+          labs(title = paste0('Sampling time') ) + 
+                    scale_color_manual(values = col.samtime) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Sampling_time.L.png'), w = w, h = h)
+
+
+
+# by cell cycle
+ggsave( DimPlot(q.t, reduction = reduction, group.by = 'Phase', repel = T, label = F, label.size = 7 , raster = T) + NoAxes()  +  
+          labs(title = paste0('Cell cycle') ) + 
+          scale_color_manual(values = color_cellcycle) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.CellCycle.T.png'), w = w+1, h = h)
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = 'Phase', repel = T, label = F, label.size = 7 , raster = T) + NoAxes()  +   NoLegend() +
+          labs(title = paste0('Cell cycle') ) + 
+          scale_color_manual(values = color_cellcycle) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.CellCycle.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = 'Phase', repel = T, label = T, label.size = 7 , raster = T) + NoAxes()  +   NoLegend() +
+          labs(title = paste0('Cell cycle') ) + 
+          scale_color_manual(values = color_cellcycle) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.CellCycle.L.png'), w = w, h = h)
+
+
+
+
+
+# by clusters
+ggsave( DimPlot(q.t, reduction = reduction, group.by = sel.clust, repel = T, label = T, label.size = 7) + NoAxes()  +  
+          labs(title = paste0('Cluster') ) + NoLegend() +
+          #scale_color_manual(values = color_cnv) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Cluster.L.png'), w = w, h = h)
+
+
+# doublets
+FeaturePlot(q.t, reduction = my.reduction, dims = 1:2, features = c(markers.B, markers.NK, markers.Myeloid), ncol = 3, raster = T) & NoLegend()
+
+ggsave( FeaturePlot(q.t, reduction = my.reduction, dims = 1:2, features = c(markers.B,markers.T.sub, markers.NK, markers.Myeloid), ncol = 3, raster = T) & NoLegend(), 
+        filename =  paste0(outdir,reduction, '.DoubletsCheck.png'), w = w*2, h = h*2)
+
+
+```
+
+
+
+
+### Manully annot
+Keep original annotation, and annotate the unknow cells based on the subcluster
+
+```{r}
+table(q.t$origin.final_cell_type)
+q.t@meta.data %>% filter(dataset == 'PMID: 3568781')  %>% pull(origin.final_cell_type) %>% table()
+q.t@meta.data %>% filter(dataset=='This study')  %>% pull(origin.final_cell_type) %>% table()
+
+
+q.t@meta.data <- q.t@meta.data %>% 
+  mutate(origin.T = if_else(dataset=='This study', str_remove(origin.final_cell_type, '\\.c\\d+'),
+                        if_else(dataset=='PMID: 3568781', str_replace(origin.final_cell_type, '_C\\d+','.'), origin.final_cell_type)),
+         origin.T = if_else(origin.T %in% c('C5', 'T', 'TcellUndetermined', 'NKT', 'CD4.CTLExt', 'CD4.RPHigh', 'NK', 'CD4Proliferating', 'CD8Proliferating','CD8.RPHigh'), 'NA', 
+                            if_else(origin.T == 'CD8.Naive', 'CD8.Tn',
+                                    if_else(origin.T == 'CD8.Ext', 'CD8.Tex',origin.T))),
+         origin.T.l1 = str_remove_all(origin.T, '\\..*'))
+
+rownames(q.t@meta.data) <- q.t$CellBarcode
+
+
+
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "origin.T", repel = T, label = F, label.size = 7) + NoAxes()  + 
+          labs(title = paste0('T subtype ') ) + 
+          scale_color_manual( values = color.T2) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Celltype.origin.T.l2.png'), w = w+2, h = h)
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "origin.T.l1", repel = T, label = F, label.size = 7) + NoAxes()  + 
+          labs(title = paste0('T subtype ') ) + 
+          scale_color_manual( values = color.T1) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Celltype.origin.T.l1.png'), w = w+2, h = h)
+```
+
+
+
+
+```{r annot T cluster}
+Idents(q.t) <- 'SCT_snn_res.0.75'
+# genes
+T.all <- readxl::read_excel('q.patient.T.cells/NKT/Tcell.annotation.xlsx', sheet = 'markers') 
+
+
+
+# function of dot plot
+mydotplot <- function( T.type){
+  ggplot(pd.df %>% filter(Type == T.type)) +
+  geom_point(aes(x = id, y = Gene, size = pct.exp, color = avg.exp.scaled)) +
+  facet_grid( Subtype ~ ., space = 'free', scales = 'free') + 
+  scale_size_area(limits = c(0,100)) + 
+  scale_colour_gradient(low = 'grey', high = '#0000FF' ) +
+    theme_bw() + 
+  theme(axis.text.x =  element_text(angle = 60,  hjust=1), axis.title = element_blank(), panel.grid =  element_blank()) 
+  
+
+}
+
+
+# Idents(q.t)   <- 'celltype.T.l2'
+# order.T <- c("CD56.NK", "CD16.NK" , "gdT",  "CD4.Treg", "CD4.Tfh" , "CD4.Tn",  "CD4.Tm" , "CD8.Tn", "CD8.Tm" , "CD8.Teff", "CD8.Tex","CD8.Tprolif" )
+
+# matrix of pct and expression
+pm.t <- DotPlot(q.t,  cluster.idents = T, features = unique(T.all$Gene), dot.min = 0,  col.min = 0, dot.scale = 7) +
+  RotatedAxis()  + coord_flip()
+
+pd.df <- pm.t$data %>% rownames_to_column('Gene') %>% 
+  rowwise() %>%  mutate(Cluster = factor(as.character(id), levels = c(order.T)) , Gene = features.plot) %>% 
+  left_join(T.all, by = 'Gene')  %>% 
+  # filter(!is.na(Subtype)) %>% 
+    mutate(Gene = factor(Gene , levels = rev(unique(T.all$Gene)))) %>% 
+  mutate(pct = ifelse(pct.exp ==0, NA, pct.exp)) %>% 
+    mutate(Subtype = factor(Subtype, levels = c('T', 'NK',"NK-like" ,'gdT','CD4', 'CD8',  'prolif', 'Treg','Tn',  'Tm', 'Tfh', 'Th', 'Tcm','Tem', 'Trm', 'Tcyto', 'Tex' )))  
+
+
+pd.m <- mydotplot('Major')
+pd.cd4 <- mydotplot('CD4')
+pd.cd8 <- mydotplot('CD8')
+
+
+
+# save (level2)
+ggsave(pd.m, file = paste0(outdir, 'Dotplot.markers.Tmajor.level2.pdf'), w = 6, h = 7)
+ggsave(pd.cd4, file = paste0(outdir,'Dotplot.markers.TCD4.level2.pdf'), w = 6, h = 7)
+ggsave(pd.cd8, file = paste0(outdir,'Dotplot.markers.TCD8.level2.pdf'), w = 6, h = 10)
+
+
+```
+
+infer the cluster annotation based on the dotplots
+```{r}
+# any sample specific clusters
+table(q.t$Sample, q.t$SCT_snn_res.0.75) %>% pheatmap(scale = 'column')
+
+# infer from the dotplots
+NK.cluster <- c(4,19,16)
+gd.T <- c(17) 
+CD8.clusters <- c(7,20,14,3,1,2,18,13,21,22,6,8) # 6, 8 
+CD4.clusters <- c(5,10, 0,12,15,23,9) # 9 = CD4/CD8
+
+# subset 
+CD56.NK <- c(16)
+CD16.NK <- c(4,19,11)
+
+CD8.Tn <- c( 8,21,22,13)
+CD8.Tm <- c(6)
+CD8.Teff <- c(3,1,2,18)
+CD8.Tex <- c(7,14,20) #
+CD8.Tprofile <- c(7)
+
+CD4.Treg <- c(5)
+CD4.Tfh <- c(10)  # 2
+CD4.Tn <- c(12)
+CD4.Tm <- c(0,15,9,23) # CD44 hi
+
+
+
+
+# for unclear cluster & for double-check, check original annotation and sample distribution
+q.t@meta.data %>% filter(`SCT_snn_res.0.75` == 9) %>% pull(Sample) %>% table() # 21 = Teff 22 = Tm
+
+q.t@meta.data %>% filter(`SCT_snn_res.0.75` == 20) %>% pull(origin.T) %>% table() # 13 = CD16.NK
+
+
+# cluster.T = q.t@meta.data %>% group_by(`SCT_snn_res.0.75`, origin.T ) %>% summarize(N_cells = n()) %>% 
+#   ungroup() %>% filter(!is.na(origin.T) & origin.T != 'NA') %>%  group_by(`SCT_snn_res.0.75`) %>% top_n(1) %>% 
+#   transmute(Cluster = `SCT_snn_res.0.75` ,
+#               infer_Tsubtype = if_else(`SCT_snn_res.0.75` == 21, 'CD8.Teff',
+#                             if_else(`SCT_snn_res.0.75` == 22, 'CD8.Tm', origin.T)) )
+
+```
+
+
+
+
+infer.cell types -- record above in the Table 
+```{r cell type infer }
+# correct cluster 
+q.t@meta.data <- q.t@meta.data %>% 
+  mutate(Cluster = as.numeric(`SCT_snn_res.0.75`) - 1 ) %>% 
+  mutate( Cluster = if_else(`SCT_snn_res.0.5` == 8 & `SCT_snn_res.0.75` != 7 , 7, 
+                                       if_else(`SCT_snn_res.0.5` == 2 & `SCT_snn_res.0.75` == 7, 2, Cluster)))
+q.t$`SCT_snn_res.0.75`  = factor(q.t$Cluster, levels = 0:23)
+rownames(q.t@meta.data) <- q.t$CellBarcode
+
+
+# cell annot
+cluster.T = readxl::read_excel('q.NKT.cells//Tcell.annotation.xlsx', sheet = 'annote') %>%
+  mutate(infer_Tsubtype = str_c(majorType,  '.', subtype ) )
+
+q.t$infer_Tsubtype <- plyr::mapvalues(q.t$SCT_snn_res.0.75, as.factor( cluster.T$Cluster), cluster.T$infer_Tsubtype )
+
+
+DimPlot(q.t, group.by = "infer_Tsubtype" , reduction = 'umap' , label = TRUE, label.size = 3,raster=FALSE) + NoLegend() 
+ggsave(last_plot(), filename = paste0(mydir, '1.Umap.infer_celltype_marker.pdf'), w = 8, h = 8)
+
+
+
+DimPlot(q.t, group.by = "SCT_snn_res.0.75" , reduction = 'umap' , label = TRUE, label.size = 3,raster=FALSE) + NoLegend() 
+
+```
+
+### Final annotation
+
+```{r}
+# infer the cells with unknow cell types
+q.t@meta.data = q.t@meta.data %>% 
+  mutate(celltype.T.l2 = if_else(!is.na(origin.T) & origin.T != 'NA', origin.T, infer_Tsubtype),
+         celltype.T.l2 = if_else(celltype.T.l2 == 'gdT.gdT', 'gdT', celltype.T.l2),
+         celltype.T.l2 = if_else(celltype.T.l2 == 'CD4.Tfh' & Tissue == 'BM', 'CD4.Tn', celltype.T.l2),
+         celltype.T.l1 = str_remove_all(celltype.T.l2, '\\..*'),
+         celltype.T.l2 = if_else(celltype.T.l2 == 'NK.CD56brightCD16lo', 'CD56.NK', if_else(celltype.T.l2 == "NK.CD56dimCD16hi", 'CD16.NK', celltype.T.l2))
+)
+rownames(q.t@meta.data) = q.t$CellBarcode 
+
+table(q.t$celltype.T.l1)
+table(q.t$celltype.T.l2)
+
+# check if the umap is strange
+DimPlot(q.t, reduction = 'umap', group.= "celltype.T.l1", repel = T, label = F, label.size = 7, raster = T) 
+DimPlot(q.t, reduction = 'umap', group.= "celltype.T.l2", repel = T, label = F, label.size = 7, raster = T) 
+q.t@meta.data %>% filter(`SCT_snn_res.0.75` == 3) %>% pull(celltype.T.l1) %>% table() 
+q.t@meta.data %>% filter(`SCT_snn_res.0.75` == 3) %>% pull(infer_Tsubtype) %>% table() 
+
+
+write_tsv(q.t@meta.data %>% select(CellBarcode, celltype.T.l1, celltype.T.l2, infer_Tsubtype), paste0(outdir, 'T.annot.tsv'))
+
+```
+
+
+Dimplot to visulation the characterized T subsets in different levels
+
+```{r dimplot, cell subtypes}
+w = 6
+h = 6
+reduction = 'umap'
+sel.clust = "Cluster"
+
+# by  sutypes
+table(q.t$celltype.T.l2)
+
+## level1 CD4 & CD8 
+color.T1 = structure(c("#8DD3C7", "#FDB462","#BEBADA" ,"#FB8072"), names = c("CD4", "CD8", 'gdT', 'NK'))
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "celltype.T.l1", repel = T, label = T, label.size = 7) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('T subtype (CD4/CD8)') ) + 
+          scale_color_manual(values = color.T1 ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Tlevel1.T.png'), w = w, h = h)
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "celltype.T.l1", repel = T, label =F, label.size = 7) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('T subtype (CD4/CD8)') ) + 
+          scale_color_manual(values = color.T1 ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Tlevel1.F.png'), w = w, h = h)
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "celltype.T.l1", repel = T, label =F, label.size = 7) + NoAxes()  +  
+          labs(title = paste0('T subtype (CD4/CD8)') ) + 
+          scale_color_manual(values = color.T1 ) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Tlevel1.legend.png'), w = w+1, h = h)
+
+## level2 T cell subtypes
+
+color.T2 = structure( c(paletteer_d('pals::tol', n = 12)), names = unique(q.t$celltype.T.l2))
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "celltype.T.l2", repel = T, label = T, label.size = 5) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('T subtype ') ) + 
+          scale_color_manual( values = color.T2) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Tlevel2.T.png'), w = w, h = h)
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "celltype.T.l2", repel = T, label = F, label.size = 7) + NoAxes()  +  NoLegend() +
+          labs(title = paste0('T subtype ') ) + 
+          scale_color_manual( values = color.T2) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Tlevel2.F.png'), w = w, h = h)
+
+
+ggsave( DimPlot(q.t, reduction = reduction, group.by = "celltype.T.l2", repel = T, label = F, label.size = 7) + NoAxes()  + 
+          labs(title = paste0('T subtype ') ) + 
+          scale_color_manual( values = color.T2) + 
+          theme(panel.background = element_rect(colour = 'black', size = 2))  ,
+        filename =  paste0(outdir,reduction, '.Tlevel2.T.legend.png'), w = w+2, h = h)
+```
+
+
+
+### save  
+```{r save}
+saveRDS(q.t, 'q.NKT.cells/02.cellannot.rds') # + cell annotations
+q.t <- read_rds('q.NKT.cells/02.cellannot.rds')
+
+```
+
+
+
+
+```{r simple markers plot}
+Idents(q.t)   <- 'celltype.T.l2'
+order.T <- c("CD56.NK", "CD16.NK" , "gdT",  "CD4.Treg", "CD4.Tfh" , "CD4.Tn",  "CD4.Tm" , "CD8.Tn", "CD8.Tm" , "CD8.Teff", "CD8.Tex","CD8.Tprolif" )
+
+# matrix of pct and expression
+pm.t <- DotPlot(q.t,  cluster.idents = T, features = unique(T.all$Gene), dot.min = 0,  col.min = 0, dot.scale = 7) +
+  RotatedAxis()  + coord_flip()
+
+pd.df <- pm.t$data %>% rownames_to_column('Gene') %>% 
+  rowwise() %>%  mutate(Cluster = factor(as.character(id), levels = c(order.T)) , Gene = features.plot) %>% 
+  left_join(T.all, by = 'Gene')  %>% 
+  # filter(!is.na(Subtype)) %>% 
+    mutate(Gene = factor(Gene , levels = rev(unique(T.all$Gene)))) %>% 
+  mutate(pct = ifelse(pct.exp ==0, NA, pct.exp)) %>% 
+    mutate(Subtype = factor(Subtype, levels = c('T', 'NK',"NK-like" ,'gdT','CD4', 'CD8',  'prolif', 'Treg','Tn',  'Tm', 'Tfh', 'Th', 'Tcm','Tem', 'Trm', 'Tcyto', 'Tex' )))  
+
+order.simple = c('CD4', 'CD8', 'Treg', 'Tfh', 'Naïve', 'Memory',  'Cyto.', 'Exhaust',  'prolif', 'gdT', 'NK')
+pd.df.simp = pd.df %>% filter(!is.na(Simple), Simple != 'DEG') %>% mutate(majorType = str_remove(Cluster, '\\..*')) %>% 
+  mutate(Simple = factor(Simple, levels = order.simple)) 
+
+ggplot(pd.df.simp ) +
+  geom_point(aes(x = Cluster, y = Gene, size = pct.exp, color = avg.exp.scaled)) +
+  facet_grid( Simple ~ majorType, space = 'free', scales = 'free') + 
+  scale_size_area(limits = c(0,100)) + 
+  scale_colour_gradient(low = 'grey', high = '#0000FF' ) +
+  theme_bw() + 
+  theme(axis.text.x =  element_text(angle = 60,  hjust=1), axis.title = element_blank(), panel.grid =  element_blank()) 
+
+ggsave(last_plot(), filename = paste0(outdir, 'Dotplot.cellmarker.facet.level2.pdf'), w = 6, h = 12)
+ggsave(last_plot(), filename = paste0(outdir, 'Dotplot.cellmarker.facet.pdf'), w = 8, h = 12)
+
+
+
+# Dotplot -simple
+features <- pd.df.simp %>% arrange(match(Simple,order.simple )) %>% pull(Gene) %>% unique()
+pd <- ggplot(pd.df.simp %>% mutate(Gene = factor(Gene, levels = rev(features)) )) +
+  geom_point(aes(x = Cluster, y = Gene, size = pct.exp, color = avg.exp.scaled)) +
+  facet_grid( . ~ majorType, space = 'free', scales = 'free') + 
+  scale_size_area(limits = c(0,100)) + 
+  scale_colour_gradient(low = 'grey', high = '#0000FF' ) +
+  theme_bw() + 
+  theme(axis.text.x =  element_text(angle = 60,  hjust=1), axis.title = element_blank(), panel.grid =  element_blank()) 
+
+ggsave(pd , filename = paste0(outdir,'Dotplot.cellmarker.H.pdf'), w = 8, h = 10)
+ggsave(pd , filename = paste0(outdir,'Dotplot.cellmarker.H.level2.pdf'), w = 6, h = 10)
+
+```
+
+
+
+# caluclate geneset score
+Exhuast / Effector
+
+```{r cyto/effect score for all cluster}
+dir.create(paste0(outdir, 'signature_score/'))
+# cyto score by AddModuleScore
+gs.cyto<- list(T.all %>% filter(Simple == 'Cyto.') %>% pull(Gene))
+q.t <- AddModuleScore(q.t, features =gs.cyto ,name= c("Cytotoxic_score"))
+
+
+# Exhaustion score by AddModuleScore
+gs.exhuast <- list(c('PDCD1', 'LAG3', 'TIGIT', 'CTLA4', 'HAVCR2'))
+q.t <- AddModuleScore(q.t, features =gs.exhuast ,name= c("Exhaustion_score"))
+
+
+# plot -level2
+p.exhau <- VlnPlot(q.t, features = "Exhaustion_score1", pt.size = 0,   group.by = 'celltype.T.l2', cols = color.T2) & NoLegend()  
+p.cyto <- VlnPlot(q.t, features = "Cytotoxic_score1", pt.size = 0,   group.by = 'celltype.T.l2', cols = color.T2) & NoLegend()  
+
+ggsave(p.exhau / p.cyto, filename = paste0(outdir, 'Score.exhuastion_cytotoxic.level2.pdf'), h = 8, w = 6)
+
+
+```
+
+
+-CD4
+```{r  score of CD4}
+sig_func = readxl::read_excel('_ref/Tcell.markers.xlsx', sheet = 'signature2function') %>% 
+  mutate(signature.name = str_replace_all(Signature, '[ /-]', '.'))
+gs.CD4 <- readxl::read_excel('_ref/Tcell.markers.xlsx', sheet = 'CD4_fromPanCancerTpaper',skip = 1) 
+gs.CD4.list <- lapply(as.list(gs.CD4), function(x) setdiff(x, NA)) 
+
+
+q.t.cd4 = subset(q.t, subset = celltype.T.l1 == 'CD4')
+for (x in seq_along(gs.CD4.list)[which(names(gs.CD4.list) != 'Exhaustion')]) {
+   q.t.cd4 <- AddModuleScore(q.t.cd4, features = list(gs.CD4.list[x]) ,name= paste0(names(gs.CD4.list[x]), '_score_CD4'))
+}
+
+
+score_mat.cd4 = q.t.cd4@meta.data %>% select(CellBarcode,  Cluster = celltype.T.l2, ends_with('_score_CD41'))
+# score_mat.cd4 = q.t.cd4@meta.data %>% select(CellBarcode,  Cluster = celltype.T.l3, ends_with('_score_CD41'))
+names(score_mat.cd4) =  plyr::mapvalues(str_remove(names(score_mat.cd4), '_score_CD41'), sig_func$signature.name, sig_func$Signature)
+write_tsv(score_mat.cd4, paste0(outdir, '/signature_score/CD4.score.perCell.level2.tsv'))
+
+score_mat.cd4.avg = score_mat.cd4 %>% gather(signature, score, -CellBarcode, -Cluster) %>% 
+  group_by(Cluster,signature) %>% summarise(score = mean(score)) %>% 
+  spread(Cluster, score) %>% 
+  arrange(match(signature, sig_func$Signature[sig_func$`T` == 'CD4']))
+write_tsv(score_mat.cd4.avg, paste0(outdir, '/signature_score/CD4.score.perCluster.level2.tsv'))
+
+
+# plot
+pheatmap(score_mat.cd4.avg %>% column_to_rownames('signature'), scale = 'row', cluster_rows = F,
+         annotation_row = sig_func %>% filter(`T` == 'CD4') %>% select(Signature, Group) %>% column_to_rownames('Signature'),
+         filename = paste0(outdir, '/signature_score/CD4.score.perCluster.scaleRow.level2.pdf'), w = 6, h = 4)
+
+pheatmap(score_mat.cd4.avg %>% column_to_rownames('signature'), scale = 'none', cluster_rows = F,
+         annotation_row = sig_func %>% filter(`T` == 'CD4') %>% select(Signature, Group) %>% column_to_rownames('Signature'),
+         filename = paste0(outdir, '/signature_score/CD4.score.perCluster.scaleNone.level2.pdf'), w = 6, h = 4)
+
+
+```
+
+
+
+- CD8
+
+```{r  score of CD8}
+gs.CD8 <- readxl::read_excel('_ref/Tcell.markers.xlsx', sheet = 'CD8_fromPanCancerTpaper',skip = 1) %>% 
+    select(one_of(sig_func$Signature[sig_func$T == 'CD8']))
+
+gs.CD8.list <- lapply(as.list(gs.CD8), function(x) setdiff(x, NA)) 
+
+
+q.t.cd8 = subset(q.t, subset = celltype.T.l1 == 'CD8')
+for (x in seq_along(gs.CD8.list)) {
+   q.t.cd8 <- AddModuleScore(q.t.cd8, features = list(gs.CD8.list[x]) ,name= paste0(names(gs.CD8.list[x]), '_score_CD8'))
+}
+
+# score of each cell
+score_mat.cd8 = q.t.cd8@meta.data %>% select(CellBarcode,  Cluster = celltype.T.l2, ends_with('_score_CD81'))
+# score_mat.cd8 = q.t.cd8@meta.data %>% select(CellBarcode,  Cluster = celltype.T.l3, ends_with('_score_CD81'))
+names(score_mat.cd8) =  plyr::mapvalues(str_remove(names(score_mat.cd8), '_score_CD81'), sig_func$signature.name, sig_func$Signature)
+# write_tsv(score_mat.cd8, paste0(outdir, '/signature_score/CD8.score.perCell.tsv'))
+write_tsv(score_mat.cd8, paste0(outdir, '/signature_score/CD8.score.perCell.level2.tsv'))
+
+# avg score of each cluster
+score_mat.cd8.avg = score_mat.cd8 %>% gather(signature, score, -CellBarcode, -Cluster) %>% 
+  group_by(Cluster,signature) %>% summarise(score = mean(score)) %>% 
+  spread(Cluster, score) %>% 
+  arrange(match(signature, sig_func$Signature[sig_func$`T` == 'CD8']))
+# write_tsv(score_mat.cd8.avg, paste0(outdir, '/signature_score/CD8.score.perCluster.tsv'))
+write_tsv(score_mat.cd8.avg, paste0(outdir, '/signature_score/CD8.score.perCluster.level2.tsv'))
+
+
+
+# heatmap
+pheatmap(score_mat.cd8.avg %>% column_to_rownames('signature'), scale = 'row',cluster_rows = F,
+         annotation_row = sig_func %>% filter(`T` == 'CD8') %>% select(Signature, Group) %>% column_to_rownames('Signature'),
+         filename = paste0(outdir, '/signature_score/CD8.score.perCluster.scaleRow.level2.pdf'), w = 6, h = 4)
+
+pheatmap(score_mat.cd8.avg %>% column_to_rownames('signature'), scale = 'none', cluster_rows = F,
+         annotation_row = sig_func %>% filter(`T` == 'CD8') %>% select(Signature, Group) %>% column_to_rownames('Signature'),
+         filename = paste0(outdir, '/signature_score/CD8.score.perCluster.scaleNone.level2.pdf'), w = 6, h = 4)
+
+
+```
+
+
+CD4+CD8
+```{r  score of all}
+signature.overlap = c(intersect(sig_func$Signature[sig_func$`T` == 'CD8'] , sig_func$Signature[sig_func$`T` == 'CD4'] ), "Exhaustion" )
+for (x in signature.overlap) {
+  print(x)
+  gs.list = list(intersect(gs.CD8.list[x][[1]],gs.CD4.list[x][[1]] ))
+   q.t <- AddModuleScore(q.t, features = gs.list,name= paste0(x, '_score'))
+}
+
+# score of each cell
+score_mat= q.t@meta.data %>% select(CellBarcode,  Cluster = celltype.T.l2, ends_with('_score1'))
+
+# score_mat= q.t@meta.data %>% select(CellBarcode,  Cluster = celltype.T.l3, ends_with('_score1'))
+names(score_mat) = str_remove(names(score_mat), '_score1')
+names(score_mat) =  plyr::mapvalues(str_remove(names(score_mat), '_score1'), sig_func$signature.name, sig_func$Signature)
+
+write_tsv(score_mat, paste0(outdir, '/signature_score/All.score.perCell.level2.tsv'))
+# write_tsv(score_mat, paste0(outdir, '/signature_score/All.score.perCell.tsv'))
+
+# avg score of each cluster
+score_mat.avg = score_mat %>% gather(signature, score, -CellBarcode, -Cluster) %>% 
+  group_by(Cluster,signature) %>% summarise(score = mean(score)) %>% 
+  spread(Cluster, score) %>% 
+  arrange(match(signature, signature.overlap[c(1:2, 15,3:14)] ))
+
+write_tsv(score_mat.avg, paste0(outdir, '/signature_score/All.score.perCluster.tsv'))
+
+
+
+# heatmap
+pheatmap(score_mat.avg %>% column_to_rownames('signature'), scale = 'row', cluster_rows = F,
+         annotation_row = sig_func %>% filter(Signature %in% signature.overlap) %>% select(Signature, Group) %>% distinct() %>%  column_to_rownames('Signature'),
+         filename = paste0(outdir, '/signature_score/All.score.perCluster.scaleRow.pdf'), w = 8, h = 5)
+
+pheatmap(score_mat.avg %>% column_to_rownames('signature'), scale = 'none', cluster_rows = F,
+         annotation_row = sig_func %>% filter(Signature %in% signature.overlap) %>% select(Signature, Group) %>% distinct() %>%  column_to_rownames('Signature'),
+         filename = paste0(outdir, '/signature_score/All.score.perCluster.scaleNone.pdf'), w = 8, h = 5)
+
+```
+
+
+
+- cytotoxic vs. exhausion 
+
+```{r featureplot}
+
+meta.multi_features <- left_join( score_mat, as.data.frame(q.t@reductions$umap@cell.embeddings) %>% rownames_to_column('CellBarcode'))
+plot_signature_grad <- function( signature){
+   ggplot(meta.multi_features, aes(x=UMAP_1, y=UMAP_2, color=get(signature))) + 
+   geom_point(size = 0.1) +
+   # scale_color_gradient2(low = "lightblue",mid = 'lightyellow',  high = "pink") +
+   scale_color_gradientn(colors = c("blue","lightblue",'white',"red","red","red")) +
+   labs(title = paste0(signature)) + 
+   theme(panel.background = element_rect(fill = 'white', colour = 'black', size = 2),
+         plot.background = element_rect(fill = 'white'),
+         axis.ticks = element_blank(), 
+         axis.text = element_blank(),
+         axis.title = element_blank(),
+         legend.title = element_blank(),
+         panel.grid.major = element_blank(),
+         panel.grid.minor = element_blank())
+  
+  ggsave(last_plot(),  filename =  paste0(outdir, '/signature_score/Dimplot.', str_replace_all(signature, '[ /-]', '.'), '.expGradient.pdf'), w = 4, h = 3)
+}
+
+mapply(plot_signature_grad, c('Naïve','Activation/Effector function', 'Cytotoxicity', 'Exhaustion'))
+#
+```
+
+
+
+```{r scatterplot}
+cell.cd8T = q.t@meta.data %>% filter(celltype.T.l2 %in% c('CD8.Tn','CD8.Tm', 'CD8.Teff', 'CD8.Tex', 'CD8.Tprolif')) %>% pull(CellBarcode)
+score_mat.f = score_mat %>% filter(CellBarcode %in% cell.cd8T) %>% left_join(q.t@meta.data %>% select(CellBarcode,celltype.T.l2))
+
+# color by cell type
+ggscatter(score_mat.f, x =  'Cytotoxicity', y = 'Exhaustion', color = 'celltype.T.l2', add = "loess", size = 0.7)
+ggsave(last_plot(), filename =  paste0(outdir, '/signature_score/Scatter.Cyto-Exhuas.pdf'), w = 7, h = 5)
+
+# all together
+ggscatter(score_mat.f, x =  'Cytotoxicity', y = 'Exhaustion', color = 'grey', add = "loess", size = 0.7, alpha = 0.7, add.params = list(color = 'black'))
+ggsave(last_plot(), filename =  paste0(outdir, '/signature_score/Scatter.Cyto-Exhuas.noColor.pdf'), w = 7, h = 5)
+
+# facet
+ggscatter(score_mat.f, x =  'Cytotoxicity', y = 'Exhaustion', facet.by =  'celltype.T.l2', nrow = 1,
+          add = "loess", size = 0.7, 
+          color = 'grey',alpha = 0.7, add.params = list(color = 'black')  )
+ggsave(last_plot(), filename =  paste0(outdir, '/signature_score/Scatter.Cyto-Exhuas.facet.pdf'), w = 12, h = 3)
+
+
+```
+
+
+barplot
+```{r}
+# level4
+ggbarplot(score_mat.f %>% mutate(diff = Cytotoxicity - Exhaustion),
+          x = 'celltype.T.l4', y = 'diff', add = 'mean_se', fill ='celltype.T.l4', palette  = color.T4, 
+          x.text.angle = 60, ylab = 'Cyto. - Exhua.') +
+  theme(panel.background = element_rect(fill = 'white', colour = 'black', size = 1)) + NoLegend()  
+
+topptx(last_plot(), filename = outfile, append = T, w = 4, h = 4)
+
+# level2
+ggbarplot(score_mat.f %>% mutate(diff = Cytotoxicity - Exhaustion),
+          x = 'celltype.T.l2', y = 'diff', add = 'mean_se', fill ='celltype.T.l2', palette  = color.T2, 
+          x.text.angle = 60, ylab = 'Cyto. - Exhua.') +
+  theme(panel.background = element_rect(fill = 'white', colour = 'black', size = 1)) + NoLegend()  
+
+topptx(last_plot(), filename = outfile, append = T, w = 4, h = 3)
+```
+
+
+### save  
+```{r save}
+saveRDS(q.t, 'q.NKT.cells//02.cellannot.rds') # + cell annotations
+q.t <- read_rds('q.NKT.cells//02.cellannot.rds')
+
+write_tsv(q.t@meta.data %>% select(CellBarcode, celltype.T.l1,celltype.T.l2), 'q.NKT.cells/CellBarcode2CellType.NKT.patiets.xls')
+
+```
+
+
+
+
+
+
+
+
+
+## Cell composition
+
+-barplot
+```{r cell% barplot level4}
+stat.celltype.total = q.t@meta.data  %>% select( Celltype = celltype.T.l4) %>% 
+  group_by( Celltype) %>% summarise(n_cells = n()) %>% spread(Celltype, n_cells)
+stat.celltype.sample = q.t@meta.data  %>% select(Sample, Celltype = celltype.T.l4 ) %>%
+  group_by(Sample, Celltype) %>% summarise(n_cells = n()) %>% spread(Celltype, n_cells,fill = 0) 
+write_tsv(stat.celltype.sample %>% bind_rows(stat.celltype.total %>% mutate(Sample = 'Total')) %>% as.data.frame(), paste0(outdir, 'stat.cell_number.perSample.level4.xls'))
+
+
+plot.celltype.sample  = stat.celltype.sample %>%  select(Sample, everything()) %>% 
+  gather(Celltype, Cell_number, -Sample) %>% 
+  left_join(phe) 
+order.T = rev(levels(q.t$celltype.T.l4))
+
+# sample 
+ggbarplot(plot.celltype.sample %>% group_by(Sample, Celltype) %>% summarise(Cell_number = sum(Cell_number)) %>% left_join(phe),
+          x = 'Celltype', y = 'Cell_number', fill = 'Sample',  position = position_fill(),
+           legend = 'right', order = order.T,
+          palette = col.sample)  + coord_flip()
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 6, height = 5)
+
+# P/R
+ggbarplot(plot.celltype.sample%>% left_join(phe) %>% group_by(Sampling_time, Celltype) %>% summarise(Cell_number = sum(Cell_number)) ,
+          x = 'Celltype', y = 'Cell_number', fill = 'Sampling_time',  position = position_fill(),
+           legend = 'right', order = order.T, palette = col.samtime)  + coord_flip()
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 6, height = 5)
+
+# Tissue
+ggbarplot(plot.celltype.sample%>% left_join(phe) %>% group_by(Tissue, Celltype) %>% summarise(Cell_number = sum(Cell_number)) ,
+          x = 'Celltype', y = 'Cell_number', fill = 'Tissue',  position = position_fill(),
+           legend = 'right', order = order.T, palette = col.tissue)  + coord_flip()
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 6, height = 5)
+
+
+
+
+```
+
+
+```{r cell% barplot level2}
+stat.celltype.total = q.t@meta.data  %>% select( Celltype = celltype.T.l2) %>% 
+  group_by( Celltype) %>% summarise(n_cells = n()) %>% spread(Celltype, n_cells)
+stat.celltype.sample = q.t@meta.data  %>% select(Sample, Celltype = celltype.T.l2 ) %>%
+  group_by(Sample, Celltype) %>% summarise(n_cells = n()) %>% spread(Celltype, n_cells,fill = 0) 
+write_tsv(stat.celltype.sample %>% bind_rows(stat.celltype.total %>% mutate(Sample = 'Total')) %>% as.data.frame(), paste0(outdir, 'stat.cell_number.perSample.level2.xls'))
+
+
+plot.celltype.sample  = stat.celltype.sample %>%  select(Sample, everything()) %>% 
+  gather(Celltype, Cell_number, -Sample) %>% 
+  left_join(phe) 
+order.T = rev(levels(q.t$celltype.T.l2))
+
+# sample 
+ggbarplot(plot.celltype.sample %>% group_by(Sample, Celltype) %>% summarise(Cell_number = sum(Cell_number)) %>% left_join(phe),
+          x = 'Celltype', y = 'Cell_number', fill = 'Sample',  position = position_fill(),
+           legend = 'right', order = order.T,
+          palette = col.sample)  + coord_flip()
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 6, height = 5)
+
+# P/R
+ggbarplot(plot.celltype.sample%>% left_join(phe) %>% group_by(Sampling_time, Celltype) %>% summarise(Cell_number = sum(Cell_number)) ,
+          x = 'Celltype', y = 'Cell_number', fill = 'Sampling_time',  position = position_fill(),
+           legend = 'right', order = order.T, palette = col.samtime)  + coord_flip()
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 6, height = 5)
+
+# Tissue
+ggbarplot(plot.celltype.sample%>% left_join(phe) %>% group_by(Tissue, Celltype) %>% summarise(Cell_number = sum(Cell_number)) ,
+          x = 'Celltype', y = 'Cell_number', fill = 'Tissue',  position = position_fill(),
+           legend = 'right', order = order.T, palette = col.tissue)  + coord_flip()
+
+eoffice::topptx(last_plot(), filename = outfile, append = T, width = 6, height = 5)
+
+
+
+
+```
+
+
+### cell composition change within patient
+```{r cell% change}
+library(ggalluvial)
+
+celltype.sample.l1 = plot.celltype.sample %>% mutate(Celltype = str_remove_all(Celltype, '\\..*')) %>% group_by(Sample, Celltype) %>% summarise(Cell_number = sum(Cell_number)) %>% left_join(phe)
+
+celltype.sample.l2 = plot.celltype.sample %>% left_join(q.t@meta.data %>% select(Celltype = celltype.T.l4, celltype.T.l2) %>% distinct()) %>% mutate(Celltype = celltype.T.l2) %>% group_by(Sample, Celltype) %>% summarise(Cell_number = sum(Cell_number)) %>% left_join(phe)
+
+celltype.sample.l4= plot.celltype.sample %>% left_join(q.t@meta.data %>% select(Celltype = celltype.T.l4 ) %>% distinct()) %>% mutate(Celltype) %>% group_by(Sample, Celltype) %>% summarise(Cell_number = sum(Cell_number)) %>% left_join(phe)
+
+
+# stack plot by patient
+plot_stacked <- function(donor){
+  # donor = 'MC4'
+
+  # paired.sample = celltype.sample.l1 %>% filter(Donor == donor, Cell_number > 0)   # level1 or level2
+  paired.sample = plot.celltype.sample %>% filter(Donor == donor, Cell_number > 0)   # level4
+
+  # paired.sample = plot.celltype.sample %>% filter(Donor == donor, Cell_number > 0)  %>% filter(grepl('CD8', Celltype)) # specific subtypes
+  
+  pd.paired <- paired.sample %>% 
+    # mutate(Celltype = factor(Celltype)) %>%
+     group_by(Sample) %>%
+    arrange(Sample, Celltype, by_group = TRUE) %>%
+    mutate(y = Cell_number) %>%
+    # filter(y > 0) %>% 
+     ungroup() %>%
+    mutate(x = as.numeric(as.factor(Sample))) %>%
+    group_by(Sample, Celltype) %>%
+    summarise(x = c(x - 0.25, x, x + 0.25), y = y) %>% filter(x %% 1 == 0)
+  
+  ggplot(pd.paired , aes(x, y, fill = Celltype)) +
+    geom_area(data = pd.paired, alpha = 0.4, position = 'fill') +
+    geom_col(width = 0.5, color = 'gray50', position = 'fill') +
+    scale_x_continuous(breaks = 1:n_distinct(pd.paired$Sample), labels = unique(pd.paired$Sample),
+                       name = 'Sample') +
+    theme_minimal(base_size = 16) +
+     scale_fill_manual(values =  color.T4) +
+    scale_fill_manual(values =  color.T4) + # modify
+    theme(panel.grid.major.x = element_blank(),
+          panel.grid.minor.x = element_blank()) 
+  
+  eoffice::topptx(last_plot(), filename = outfile, append = T, width = n_distinct(pd.paired$Sample) *4, height = 3)
+
+}
+
+
+map(c( 'MC3','MC4', 'MC201', 'MC202', 'MC203', 'MC205', 'MC206'), plot_stacked)
+map(c('MC3', 'MC206', 'MC4'),plot_stacked) # from same tissue
+
+
+
+```
+
+
+```{r cell% lineplot level4}
+# stat : sample-specific clusters
+stat.l4.sample = plot.celltype.sample %>% 
+  group_by(Celltype) %>% mutate(Total_cell_byCellType =sum(Cell_number)) %>% 
+  mutate(pct_byCellType = Cell_number/Total_cell_byCellType * 100) %>% 
+  ungroup() %>% group_by(Sample) %>% mutate(Total_cell_bySample =sum(Cell_number)) %>% 
+  mutate(pct_bySample = Cell_number/Total_cell_bySample * 100) 
+write_tsv(stat.l4.sample, 'q.patient.T.cells/NKT/stat.cell_pct.level4.xls')
+
+# box plot of BM samples DvsR
+sample.BM.DR <- stat.l4.sample %>% filter(Tissue == 'BM', Cancer_type == 'MCL', Sampling_time != 'Progress') %>% select(Sample, Sampling_time)
+p.stat <- stat.l4.sample %>% filter(Sample %in% sample.BM.DR$Sample, ! Celltype %in% c("CD4.c21.Tn(ZFP36L2)", "CD8.c19.Tex(IFNG+)" , "CD8.c22.Tex(TOX+)" )) %>% 
+  select(Celltype, Sample, Sampling_time, pct_bySample) %>% 
+  group_by(Celltype) %>% wilcox_test( pct_bySample ~ Sampling_time) %>% mutate(y.position = 30, group1 = Celltype, group2 = Celltype)
+
+ggboxplot(stat.l4.sample %>% filter(Sample %in% sample.BM.DR$Sample, ! Celltype %in% c("CD4.c21.Tn(ZFP36L2)", "CD8.c19.Tex(IFNG+)" , "CD8.c22.Tex(TOX+)" )) , 
+          x = 'Celltype', y = 'pct_bySample', fill = 'Sampling_time', palette = col.samtime[1:2], outlier.shape = NA, x.text.angle = 90) +
+  stat_pvalue_manual(p.stat, label = "p")
+eoffice::topptx(last_plot(), filename = 'q.patient.T.cells/NKT/NKT.DvsR.pptx', append = T, width = 8, height = 6, title = 'BM samples (5 primary vs 6 relapse')
+
+# lineplot of paired D/R samples
+ggline(stat.l4.sample %>% filter( ! Celltype %in% c("CD4.c21.Tn(ZFP36L2)", "CD8.c19.Tex(IFNG+)" , "CD8.c22.Tex(TOX+)" )) %>% 
+         filter(Donor %in% c('MC3', 'MC203', 'MC205', 'MC202', 'MC206'), Sampling_time != 'Progress', Sample != 'MC3Rl') %>% 
+         mutate( Sampling_time = factor(Sampling_time, levels = c('Primary', 'Relapse'))),
+       x = 'Sampling_time', y = 'pct_bySample', ylab = '% of cells',
+       facet.by = 'Celltype',  scale = 'free', nrow = 3,
+       group = 'Donor',   color = 'Donor', palette = col.patient) +
+  # rremove('legend') + 
+  stat_compare_means(paired = T, label = '..p..') + 
+  # stat_compare_means(paired = T, label = '..p..') + 
+  scale_y_continuous(expand=expand_scale(mult=c(0.05, 0.1)))
+eoffice::topptx(last_plot(), filename = 'q.patient.T.cells/NKT/NKT.DvsR.pptx', append = T, width = 8, height = 6, title = 'Paired samples')
+
+
+```
+
+
+
+```{r cell% lineplot level4}
+# stat : sample-specific clusters
+stat.l2.sample = plot.celltype.sample %>% 
+  group_by(Celltype) %>% mutate(Total_cell_byCellType =sum(Cell_number)) %>% 
+  mutate(pct_byCellType = Cell_number/Total_cell_byCellType * 100) %>% 
+  ungroup() %>% group_by(Sample) %>% mutate(Total_cell_bySample =sum(Cell_number)) %>% 
+  mutate(pct_bySample = Cell_number/Total_cell_bySample * 100) 
+write_tsv(stat.l2.sample, 'q.patient.T.cells/NKT/stat.cell_pct.level4.xls')
+
+# box plot of BM samples DvsR
+sample.BM.DR <- stat.l2.sample %>% filter(Tissue == 'BM', Cancer_type == 'MCL', Sampling_time != 'Progress') %>% select(Sample, Sampling_time)
+p.stat <- stat.l4.sample %>% filter(Sample %in% sample.BM.DR$Sample) %>% 
+  select(Celltype, Sample, Sampling_time, pct_bySample) %>% 
+  group_by(Celltype) %>% wilcox_test( pct_bySample ~ Sampling_time) %>% mutate(y.position = 50, group1 = Celltype, group2 = Celltype)
+
+ggboxplot(stat.l2.sample %>% filter(Sample %in% sample.BM.DR$Sample) , 
+          x = 'Celltype', y = 'pct_bySample', fill = 'Sampling_time', palette = col.samtime[1:2], outlier.shape = NA, x.text.angle = 90) +
+  stat_pvalue_manual(p.stat, label = "p")
+eoffice::topptx(last_plot(), filename = 'q.patient.T.cells/NKT/NKT.DvsR.pptx', append = T, width = 8, height = 6, title = 'BM samples (5 primary vs 6 relapse')
+
+# lineplot of paired D/R samples
+ggline(stat.l2.sample %>% filter( ! Celltype %in% c("CD4.c21.Tn(ZFP36L2)", "CD8.c19.Tex(IFNG+)" , "CD8.c22.Tex(TOX+)" )) %>% 
+         filter(Donor %in% c('MC3', 'MC203', 'MC205', 'MC202', 'MC206'), Sampling_time != 'Progress', Sample != 'MC3Rl') %>% 
+         mutate( Sampling_time = factor(Sampling_time, levels = c('Primary', 'Relapse'))),
+       x = 'Sampling_time', y = 'pct_bySample', ylab = '% of cells',
+       facet.by = 'Celltype',  scale = 'free', nrow = 3,
+       group = 'Donor',   color = 'Donor', palette = col.patient) +
+  # rremove('legend') + 
+  stat_compare_means(paired = T, label = '..p..') + 
+  # stat_compare_means(paired = T, label = '..p..') + 
+  scale_y_continuous(expand=expand_scale(mult=c(0.05, 0.1)))
+eoffice::topptx(last_plot(), filename = 'q.patient.T.cells/NKT/NKT.DvsR.pptx', append = T, width = 6, height = 6, title = 'Paired samples')
+
+
+```
+
+
+
+
+## DvsR
+```{r DvsR: signature score}
+# grou level
+pd.sig <- q.t@meta.data %>% select(Score = Cytotoxicity_score1, Sample, Celltype = celltype.T.l2, Sampling_time) %>% 
+  filter(Celltype %in% c('CD8.Teff', 'CD8.Tex'), Sampling_time %in% c('Primary', 'Relapse')) 
+
+ggboxplot(pd.sig , x = 'Sampling_time', y = 'Score', fill =  'Sampling_time', facet.by = 'Celltype', order = order.samtime, palette = col.samtime) + 
+  stat_compare_means() + NoLegend()
+
+
+# sample level
+pd.sig.samp <- q.t@meta.data %>% select(ends_with( 'score1'), Sample, CellBarcode, Celltype = celltype.T.l2) %>% 
+  gather(Signature, Score , -Sample, -Celltype, -CellBarcode) %>% mutate(Signature = str_remove(Signature, '_score1')) %>% 
+  filter(Celltype %in% c('CD8.Teff', 'CD8.Tex'))  %>% 
+  group_by(Sample,Signature, Celltype) %>% summarise(Score = mean(Score)) %>% left_join(phe)
+
+ggline(pd.sig.samp %>% filter(Donor %in% c('MC3', 'MC203', 'MC205', 'MC202', 'MC206'), Sample != 'MC3Rl', Sampling_time != 'Progress',
+                               # Celltype == 'CD8.Tex', Signature == 'Exhaustion') %>% 
+                                Celltype == 'CD8.Teff', Signature == 'Cytotoxic') %>% 
+         mutate( Sampling_time = factor(Sampling_time, levels = c('Primary', 'Relapse'))),
+       x = 'Sampling_time', y = 'Score', 
+       facet.by = 'Signature',  scale = 'free', nrow = 1,
+       group = 'Donor',   color = 'Donor', palette = col.patient) +
+  stat_compare_means() +
+  rremove('legend') +  scale_y_continuous(expand=expand_scale(mult=c(0.05, 0.1)))
+
+eoffice::topptx(last_plot(), filename = 'q.patient.T.cells/NKT/NKT.DvsR.pptx', append = T, width = 6, height = 6, title = 'Paired samples')
+
+
+
+```
+
+
+```{r DvsR: signature sore}
+df.l2.sig <- read_tsv('q.patient.T.cells//NKT/signature_score/All.score.perCell.tsv')
+
+df.l2.sig.pairs = df.l2.sig %>% left_join(q.t@meta.data %>% select(CellBarcode, Sample)) %>% 
+  gather(Signature, Score, - Sample, -CellBarcode, -Cluster) %>% 
+  group_by(Sample, Cluster, Signature) %>% summarise(Score = median(Score)) %>% 
+  left_join(phe %>% select(Sample, Sampling_time, Donor)) %>%
+  # filter(Donor %in% c('MC3', 'MC203', 'MC205', 'MC202', 'MC206'), Sample != 'MC3Rl', Sampling_time != 'Progress') %>% 
+  identity()
+ 
+
+
+group_comp = read_tsv('sample_compare.xls') %>% filter(Treatment != 'Untreated')
+df_exp = group_comp %>% gather(Time, Sample, -Donor, -Group,-Treatment, -ID) %>% 
+  left_join(df.l2.sig.pairs %>% select(Sample,Signature, Cluster , Score), by = 'Sample')
+
+# plot seperated meta_program but colored by treatment group -----
+
+celltype = 'CD8.Teff'
+celltype = 'CD8.Tex'
+
+ggplot(df_exp %>% 
+         filter(Signature %in% c('Cytotoxicity', 'Exhaustion', 'Stress response', 'Adhesion', 'IFN response')) %>%
+         filter( Cluster == celltype) ,
+       aes(x = Time, y = Score, group = ID)) +
+  # geom_line(aes(color = Donor, linetype = Treatment)) +
+  geom_line(aes(color = Treatment)) +
+  scale_color_manual(values =col.treatment ) + 
+  new_scale_color() +
+  geom_point(color = 'grey') + 
+  # geom_point(aes(color = Sample)) +
+  # scale_color_manual(values = col.sample )+ 
+  facet_wrap(~ Signature, scale = 'free_y', nrow =1) +
+  theme_bw() +
+  stat_compare_means(comparisons = list(c('Time1', 'Time2')), paired = T, label = '..p..') + 
+  scale_y_continuous(expand=expand_scale(mult=c(0.05, 0.1)))
+
+eoffice::topptx(last_plot(),  filename = paste0(mydir, 'plot.pptx'), append = T, width = 6, height = 6, title = paste0('singature score ', celltype))
+eoffice::topptx(last_plot(),  filename = paste0(mydir, 'plot.pptx'), append = T, width = 6, height = 2, title = paste0('singature score ', celltype))
+
+
+
+
+```
